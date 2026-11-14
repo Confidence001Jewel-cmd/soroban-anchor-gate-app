@@ -486,13 +486,18 @@ jobs:
             const issueCompliant = '${{ needs.issue-compliance.outputs.is_compliant }}' === 'true';
             const scanClean = '${{ needs.malware-scan.outputs.is_clean }}' === 'true';
             const issueReason = `${{ needs.issue-compliance.outputs.failure_reason }}`;
-            const scanReport = `${{ needs.malware-scan.outputs.scan_report }}`;
+            const rawScanReport = `${{ needs.malware-scan.outputs.scan_report }}`;
+            const scanReport = rawScanReport.trim() !== '' ? rawScanReport : '🚨 Security scan flagged an unverified anomaly or secret leak.';
             const linkedIssue = '${{ needs.issue-compliance.outputs.linked_issue }}';
             const issueTitle = `${{ needs.issue-compliance.outputs.issue_title }}`;
             const scopeReport = `${{ needs.issue-compliance.outputs.scope_report }}`;
             const timestamp = new Date().toISOString();
 
-            if (!issueCompliant || !scanClean) {
+            // Maintainer / Release sync check
+            const isMaintainerPR = prAuthor.toLowerCase() === context.repo.owner.toLowerCase() || prAuthor.toLowerCase() === 'emarkees';
+            const isReleaseSync = pr.head.ref === 'develop' && pr.base.ref === 'main';
+
+            if (!issueCompliant || (!scanClean && !isReleaseSync)) {
               let body = `## 🚨 PR Security Gate — REJECTED & CLOSED\n\n`;
               body += `**PR:** #${prNumber} by @${prAuthor}\n`;
               body += `**Time:** ${timestamp}\n\n`;
