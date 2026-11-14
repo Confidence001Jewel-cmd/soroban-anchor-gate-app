@@ -438,32 +438,35 @@ jobs:
       # ── Verdict ─────────────────────────────────────────────────────────
       - name: "🏛️ Malicious Code Verdict"
         id: verdict
-        run: |
-          CLEAN=true
-          REPORT=""
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const patternClean = '${{ steps.pattern_scan.outputs.is_clean }}' === 'true';
+            const gitleaksOutcome = '${{ steps.gitleaks.outcome }}';
+            const fileClean = '${{ steps.file_check.outputs.is_clean }}' === 'true';
 
-          if [ "${{ steps.pattern_scan.outputs.is_clean }}" != "true" ]; then
-            CLEAN=false
-            REPORT="${REPORT}\n### 🔬 Pattern Scan\n${{ steps.pattern_scan.outputs.findings }}"
-          fi
+            let clean = true;
+            let report = '';
 
-          if [ "${{ steps.gitleaks.outcome }}" == "failure" ]; then
-            CLEAN=false
-            REPORT="${REPORT}\n### 🔑 Secret Leak Detection\n🚨 Gitleaks detected leaked credentials or keys in the branch."
-          fi
+            if (!patternClean) {
+              clean = false;
+              const findings = `${{ steps.pattern_scan.outputs.findings }}`;
+              report += `\n### 🔬 Pattern Scan\n` + findings;
+            }
 
-          if [ "${{ steps.file_check.outputs.is_clean }}" != "true" ]; then
-            CLEAN=false
-            REPORT="${REPORT}\n### 📄 Binary/Payload Anomalies\n${{ steps.file_check.outputs.findings }}"
-          fi
+            if (gitleaksOutcome === 'failure') {
+              clean = false;
+              report += `\n### 🔑 Secret Leak Detection\n🚨 Gitleaks detected potential credentials or secrets.`;
+            }
 
-          echo "is_clean=$CLEAN" >> $GITHUB_OUTPUT
-          if [ "$CLEAN" == "true" ]; then
-            echo "scan_report=✅ All malicious code inspection layers passed clean." >> $GITHUB_OUTPUT
-          else
-            ESCAPED=$(echo -e "$REPORT" | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "scan_report=$ESCAPED" >> $GITHUB_OUTPUT
-          fi
+            if (!fileClean) {
+              clean = false;
+              const fileFindings = `${{ steps.file_check.outputs.findings }}`;
+              report += `\n### 📄 Binary/Payload Anomalies\n` + fileFindings;
+            }
+
+            core.setOutput('is_clean', clean ? 'true' : 'false');
+            core.setOutput('scan_report', clean ? '✅ All malicious code inspection layers passed clean.' : report);
 
   # ═══════════════════════════════════════════════════════════════════════════
   # JOB 3 — Final Decision Gate
