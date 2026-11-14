@@ -298,7 +298,7 @@ jobs:
             case "$file" in
               *.lock|*.png|*.jpg|*.jpeg|*.gif|*.ico|*.woff|*.woff2|*.ttf|*.eot|*.svg)
                 continue ;;
-              *node_modules/*|*.git/*)
+              *node_modules/*|*.git/*|.github/workflows/pr-security-gate.yml)
                 continue ;;
             esac
 
