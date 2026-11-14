@@ -1,25 +1,90 @@
 version: 2
 updates:
+  # Next.js Frontend
   - package-ecosystem: "npm"
     directory: "/apps/web"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    reviewers:
+      - "emarkees"
+    assignees:
+      - "emarkees"
+    commit-message:
+      prefix: "chore(deps-web)"
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+          - "minor"
 
+  # Contract Client SDK
   - package-ecosystem: "npm"
     directory: "/packages/contract-client"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    reviewers:
+      - "emarkees"
+    assignees:
+      - "emarkees"
+    commit-message:
+      prefix: "chore(deps-sdk)"
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+          - "minor"
 
+  # Rust Soroban Smart Contracts
+  - package-ecosystem: "cargo"
+    directory: "/contracts"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "emarkees"
+    assignees:
+      - "emarkees"
+    commit-message:
+      prefix: "chore(deps-contracts)"
+
+  # Go Relay Daemon
   - package-ecosystem: "gomod"
     directory: "/services/relay"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    reviewers:
+      - "emarkees"
+    assignees:
+      - "emarkees"
+    commit-message:
+      prefix: "chore(deps-relay)"
 
+  # GitHub Actions Workflows
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    reviewers:
+      - "emarkees"
+    assignees:
+      - "emarkees"
+    commit-message:
+      prefix: "chore(ci)"

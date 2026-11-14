@@ -69,18 +69,19 @@ jobs:
             console.log(`🔍 Checking PR #${pr.number} by @${prAuthor}`);
             console.log(`   Branch: ${branchName}`);
 
-            // ── Maintainer / Release Bypass ────────────────────────────────
-            // Repo owner (@emarkees) or develop->main release PRs bypass issue-linking requirements
+            // ── Maintainer / Release / Dependabot Bypass ──────────────────
             const isMaintainer = prAuthor.toLowerCase() === context.repo.owner.toLowerCase() || prAuthor.toLowerCase() === 'emarkees';
+            const isDependabot = prAuthor.toLowerCase() === 'dependabot[bot]' || prAuthor.toLowerCase() === 'dependabot';
             const isReleasePR = branchName === 'develop' && pr.base.ref === 'main';
 
-            if (isMaintainer || isReleasePR) {
-              console.log(`👑 Maintainer/Release PR detected for @${prAuthor}. Issue assignment requirement bypassed.`);
+            if (isMaintainer || isReleasePR || isDependabot) {
+              const roleName = isDependabot ? 'Dependabot' : (isReleasePR ? 'Release Sync' : 'Maintainer');
+              console.log(`👑 ${roleName} PR detected for @${prAuthor}. Issue assignment requirement bypassed.`);
               core.setOutput('is_compliant', 'true');
-              core.setOutput('linked_issue', isReleasePR ? 'release-sync' : 'maintainer-branch');
-              core.setOutput('issue_title', isReleasePR ? 'Release Sync: develop -> main' : 'Maintainer Direct Update');
+              core.setOutput('linked_issue', isDependabot ? 'automated-deps' : (isReleasePR ? 'release-sync' : 'maintainer-branch'));
+              core.setOutput('issue_title', isDependabot ? 'Dependabot Dependency Update' : (isReleasePR ? 'Release Sync: develop -> main' : 'Maintainer Direct Update'));
               core.setOutput('issue_layer', 'all');
-              core.setOutput('scope_report', 'Maintainer / Release PR: authorized full repository access.');
+              core.setOutput('scope_report', `${roleName} PR: verified automated/trusted scope.`);
               core.setOutput('failure_reason', '');
               return;
             }
