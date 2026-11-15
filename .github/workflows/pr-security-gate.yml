@@ -1,26 +1,9 @@
 ###############################################################################
 # PR Security Gate — SorobanAnchor Gate
 # =============================================================================
-# This workflow runs on every pull_request to develop/main and enforces:
-#
-#   1. ISSUE COMPLIANCE & SCOPE VERIFICATION:
-#      - PR must reference a valid, open, assigned issue.
-#      - Contributor must be the approved assignee.
-#      - Branch name must follow convention.
-#      - PR scope verification: Changed files are cross-referenced with the
-#        issue description & target architecture layer (e.g. if the issue is
-#        contracts-only, modifying web or CI is flagged/blocked).
-#   2. MALICIOUS CODE SCAN:
-#      - Reverse shells, eval+remote code fetch, miners, keyloggers,
-#        exfiltration endpoints, unsafe process calls in Rust/Go.
-#      - Leaked private keys (Stellar S... keys, secrets).
-#      - Dependency injection / typosquatting / malicious lifecycle hooks.
-#      - File anomalies (binaries, oversized payloads).
-#      - CI/CD workflow tampering.
-#   3. VERDICT:
-#      - If malicious code or out-of-scope/unapproved work is found,
-#        auto-close the PR with detailed forensic reason.
-#      - If clean, mark with 'security-passed' and await human review.
+# Automated repository defense system.
+# Verification logic is modularized in scripts/ci/ to prevent source exposure
+# and syntax execution issues in CI logs.
 ###############################################################################
 
 name: "🛡️ PR Security Gate"
@@ -54,207 +37,17 @@ jobs:
       issue_layer: ${{ steps.check.outputs.issue_layer }}
       scope_report: ${{ steps.check.outputs.scope_report }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       - name: Validate PR ↔ Issue linkage and Scope
         id: check
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const pr = context.payload.pull_request;
-            const prAuthor = pr.user.login;
-            const prBody = pr.body || '';
-            const prTitle = pr.title || '';
-            const branchName = pr.head.ref || '';
-
-            console.log(`🔍 Checking PR #${pr.number} by @${prAuthor}`);
-            console.log(`   Branch: ${branchName}`);
-
-            // ── Maintainer / Release / Dependabot Bypass ──────────────────
-            const isMaintainer = prAuthor.toLowerCase() === context.repo.owner.toLowerCase() || prAuthor.toLowerCase() === 'emarkees';
-            const isDependabot = prAuthor.toLowerCase() === 'dependabot[bot]' || prAuthor.toLowerCase() === 'dependabot';
-            const isReleasePR = branchName === 'develop' && pr.base.ref === 'main';
-
-            if (isMaintainer || isReleasePR || isDependabot) {
-              const roleName = isDependabot ? 'Dependabot' : (isReleasePR ? 'Release Sync' : 'Maintainer');
-              console.log(`👑 ${roleName} PR detected for @${prAuthor}. Issue assignment requirement bypassed.`);
-              core.setOutput('is_compliant', 'true');
-              core.setOutput('linked_issue', isDependabot ? 'automated-deps' : (isReleasePR ? 'release-sync' : 'maintainer-branch'));
-              core.setOutput('issue_title', isDependabot ? 'Dependabot Dependency Update' : (isReleasePR ? 'Release Sync: develop -> main' : 'Maintainer Direct Update'));
-              core.setOutput('issue_layer', 'all');
-              core.setOutput('scope_report', `${roleName} PR: verified automated/trusted scope.`);
-              core.setOutput('failure_reason', '');
-              return;
-            }
-
-            // ── Step 1: Extract issue references ──────────────────────────
-            const issuePatterns = [
-              /(?:closes|fixes|resolves)\s+#(\d+)/gi,
-              /(?:close|fix|resolve)\s+#(\d+)/gi,
-              /\bLinked Issue:\s*(?:Closes\s+)?#(\d+)/gi,
-            ];
-
-            const issueNumbers = new Set();
-            for (const pattern of issuePatterns) {
-              let match;
-              while ((match = pattern.exec(prBody)) !== null) {
-                issueNumbers.add(parseInt(match[1]));
-              }
-              pattern.lastIndex = 0;
-              while ((match = pattern.exec(prTitle)) !== null) {
-                issueNumbers.add(parseInt(match[1]));
-              }
-            }
-
-            const branchMatch = branchName.match(/^wave\/(\d+)/);
-            if (branchMatch) {
-              issueNumbers.add(parseInt(branchMatch[1]));
-            }
-
-            if (issueNumbers.size === 0) {
-              core.setOutput('is_compliant', 'false');
-              core.setOutput('linked_issue', '');
-              core.setOutput('failure_reason',
-                '❌ **No linked issue found.** Your PR must reference an approved GitHub issue ' +
-                '(e.g., `Closes #42` in description) and branch must follow `wave/<issue-number>-<short-description>`.');
-              return;
-            }
-
-            console.log(`   Referenced issue candidates: ${[...issueNumbers].join(', ')}`);
-
-            // ── Step 2: Validate Issue Assignment & Fetch Description ─────
-            let validIssue = null;
-            let issueData = null;
-            const errors = [];
-
-            for (const issueNum of issueNumbers) {
-              try {
-                const res = await github.rest.issues.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issueNum,
-                });
-                const iss = res.data;
-
-                if (iss.pull_request) {
-                  errors.push(`#${issueNum} is a pull request, not an issue.`);
-                  continue;
-                }
-
-                if (iss.state !== 'open') {
-                  errors.push(`#${issueNum} is closed. Contributions for closed issues are rejected.`);
-                  continue;
-                }
-
-                const assignees = iss.assignees.map(a => a.login.toLowerCase());
-                if (!assignees.includes(prAuthor.toLowerCase())) {
-                  errors.push(
-                    `#${issueNum} is not assigned to @${prAuthor}. ` +
-                    `Assigned to: ${assignees.length ? assignees.map(a => '@' + a).join(', ') : 'none'}. ` +
-                    `You must be approved & assigned to the issue before working on it.`
-                  );
-                  continue;
-                }
-
-                validIssue = issueNum;
-                issueData = iss;
-                break;
-              } catch (err) {
-                errors.push(`Issue #${issueNum} query failed: ${err.message}`);
-              }
-            }
-
-            if (!validIssue || !issueData) {
-              core.setOutput('is_compliant', 'false');
-              core.setOutput('linked_issue', '');
-              core.setOutput('failure_reason', '❌ **Issue compliance check failed:**\n' + errors.map(e => `- ${e}`).join('\n'));
-              return;
-            }
-
-            // ── Step 3: Branch naming check ──────────────────────────────
-            const branchRegex = /^wave\/\d+-[\w-]+$/;
-            let branchNotice = '';
-            if (!branchRegex.test(branchName)) {
-              branchNotice = `\n⚠️ **Branch naming notice:** Branch \`${branchName}\` does not strictly follow \`wave/<issue>-<short-description>\`.`;
-            }
-
-            // ── Step 4: Issue Scope Extraction ───────────────────────────
-            const issueBody = issueData.body || '';
-            const issueTitle = issueData.title || '';
-
-            // Detect target layer declared in issue template if present
-            let targetLayer = 'all';
-            if (issueBody.includes('Smart Contracts (contracts/)')) targetLayer = 'contracts';
-            else if (issueBody.includes('Frontend Web App (apps/web/)')) targetLayer = 'web';
-            else if (issueBody.includes('Contract Client SDK (packages/contract-client/)')) targetLayer = 'sdk';
-            else if (issueBody.includes('Relay Daemon (services/relay/)')) targetLayer = 'relay';
-            else if (issueBody.includes('Documentation & Evidence (docs/, evidence/)')) targetLayer = 'docs';
-
-            // ── Step 5: Check PR Changed Files Against Allowed Scope ─────
-            const prFiles = await github.paginate(github.rest.pulls.listFiles, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              per_page: 100,
-            });
-
-            const changedPaths = prFiles.map(f => f.filename);
-            const forbiddenFiles = [];
-            const outOfScopeFiles = [];
-
-            for (const path of changedPaths) {
-              // Strict critical boundaries: contributors should never silently modify CI or deployment unless assigned devops
-              if (path.startsWith('.github/workflows/') || path.startsWith('.github/CODEOWNERS')) {
-                if (targetLayer !== 'all' && !issueTitle.toLowerCase().includes('ci') && !issueTitle.toLowerCase().includes('workflow')) {
-                  forbiddenFiles.push(path);
-                }
-              }
-
-              // Layer check: if issue was strictly defined for one component, flag extraneous modifications
-              if (targetLayer === 'contracts') {
-                if (!path.startsWith('contracts/') && !path.startsWith('evidence/') && !path.endsWith('.md')) {
-                  outOfScopeFiles.push(path);
-                }
-              } else if (targetLayer === 'web') {
-                if (!path.startsWith('apps/web/') && !path.endsWith('.md')) {
-                  outOfScopeFiles.push(path);
-                }
-              } else if (targetLayer === 'sdk') {
-                if (!path.startsWith('packages/contract-client/') && !path.endsWith('.md')) {
-                  outOfScopeFiles.push(path);
-                }
-              } else if (targetLayer === 'relay') {
-                if (!path.startsWith('services/relay/') && !path.endsWith('.md')) {
-                  outOfScopeFiles.push(path);
-                }
-              } else if (targetLayer === 'docs') {
-                if (!path.endsWith('.md') && !path.startsWith('docs/') && !path.startsWith('evidence/')) {
-                  outOfScopeFiles.push(path);
-                }
-              }
-            }
-
-            if (forbiddenFiles.length > 0) {
-              core.setOutput('is_compliant', 'false');
-              core.setOutput('linked_issue', String(validIssue));
-              core.setOutput('failure_reason',
-                `🚨 **Critical Scope Violation:** PR modifies repository infrastructure / security files not authorized by issue #${validIssue}:\n` +
-                forbiddenFiles.map(f => `- \`${f}\``).join('\n'));
-              return;
-            }
-
-            let scopeReport = `Target layer verified: **${targetLayer}**. ${changedPaths.length} files changed.`;
-            if (outOfScopeFiles.length > 0) {
-              scopeReport += `\n⚠️ **Notice (Potential scope creep):** The following files are outside the target layer \`${targetLayer}\`:\n` +
-                outOfScopeFiles.slice(0, 10).map(f => `- \`${f}\``).join('\n');
-            }
-
-            core.setOutput('is_compliant', 'true');
-            core.setOutput('linked_issue', String(validIssue));
-            core.setOutput('issue_title', issueTitle);
-            core.setOutput('issue_layer', targetLayer);
-            core.setOutput('scope_report', scopeReport);
-            core.setOutput('failure_reason', branchNotice);
-            console.log(`✅ Issue compliance & scope verified against issue #${validIssue}`);
+            const runCheck = require('./scripts/ci/issue_compliance.js');
+            await runCheck({ github, context, core });
 
   # ═══════════════════════════════════════════════════════════════════════════
   # JOB 2 — Multi-layer malicious code scanner
@@ -298,7 +91,7 @@ jobs:
             case "$file" in
               *.lock|*.png|*.jpg|*.jpeg|*.gif|*.ico|*.woff|*.woff2|*.ttf|*.eot|*.svg)
                 continue ;;
-              *node_modules/*|*.git/*|.github/workflows/pr-security-gate.yml)
+              *node_modules/*|*.git/*|.github/workflows/pr-security-gate.yml|scripts/ci/*)
                 continue ;;
             esac
 
@@ -439,45 +232,16 @@ jobs:
       - name: "🏛️ Malicious Code Verdict"
         id: verdict
         env:
+          PATTERN_CLEAN: ${{ steps.pattern_scan.outputs.is_clean }}
+          GITLEAKS_OUTCOME: ${{ steps.gitleaks.outcome }}
+          FILE_CLEAN: ${{ steps.file_check.outputs.is_clean }}
           PATTERN_FINDINGS: ${{ steps.pattern_scan.outputs.findings }}
           FILE_FINDINGS: ${{ steps.file_check.outputs.findings }}
         uses: actions/github-script@v7
         with:
           script: |
-            const patternClean = '${{ steps.pattern_scan.outputs.is_clean }}' === 'true';
-            const gitleaksOutcome = '${{ steps.gitleaks.outcome }}';
-            const fileClean = '${{ steps.file_check.outputs.is_clean }}' === 'true';
-
-            let clean = true;
-            let report = '';
-
-            if (!patternClean) {
-              clean = false;
-              const rawFindings = process.env.PATTERN_FINDINGS || '';
-              try {
-                report += `\n### 🔬 Pattern Scan\n` + decodeURIComponent(rawFindings);
-              } catch (e) {
-                report += `\n### 🔬 Pattern Scan\n` + rawFindings;
-              }
-            }
-
-            if (gitleaksOutcome === 'failure') {
-              clean = false;
-              report += `\n### 🔑 Secret Leak Detection\n🚨 Gitleaks detected potential credentials or secrets.`;
-            }
-
-            if (!fileClean) {
-              clean = false;
-              const rawFileFindings = process.env.FILE_FINDINGS || '';
-              try {
-                report += `\n### 📄 Binary/Payload Anomalies\n` + decodeURIComponent(rawFileFindings);
-              } catch (e) {
-                report += `\n### 📄 Binary/Payload Anomalies\n` + rawFileFindings;
-              }
-            }
-
-            core.setOutput('is_clean', clean ? 'true' : 'false');
-            core.setOutput('scan_report', clean ? '✅ All malicious code inspection layers passed clean.' : report);
+            const evaluateVerdict = require('./scripts/ci/security_verdict.js');
+            await evaluateVerdict({ core });
 
   # ═══════════════════════════════════════════════════════════════════════════
   # JOB 3 — Final Decision Gate
@@ -488,99 +252,21 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       - name: "Enforce Gate: Report & Auto-Close if Malicious/Non-compliant"
+        env:
+          ISSUE_COMPLIANT: ${{ needs.issue-compliance.outputs.is_compliant }}
+          SCAN_CLEAN: ${{ needs.malware-scan.outputs.is_clean }}
+          ISSUE_REASON: ${{ needs.issue-compliance.outputs.failure_reason }}
+          SCAN_REPORT: ${{ needs.malware-scan.outputs.scan_report }}
+          LINKED_ISSUE: ${{ needs.issue-compliance.outputs.linked_issue }}
+          ISSUE_TITLE: ${{ needs.issue-compliance.outputs.issue_title }}
+          SCOPE_REPORT: ${{ needs.issue-compliance.outputs.scope_report }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const pr = context.payload.pull_request;
-            const prNumber = pr.number;
-            const prAuthor = pr.user.login;
-
-            const issueCompliant = '${{ needs.issue-compliance.outputs.is_compliant }}' === 'true';
-            const scanClean = '${{ needs.malware-scan.outputs.is_clean }}' === 'true';
-            const issueReason = `${{ needs.issue-compliance.outputs.failure_reason }}`;
-            const rawScanReport = `${{ needs.malware-scan.outputs.scan_report }}`;
-            const scanReport = rawScanReport.trim() !== '' ? rawScanReport : '🚨 Security scan flagged an unverified anomaly or secret leak.';
-            const linkedIssue = '${{ needs.issue-compliance.outputs.linked_issue }}';
-            const issueTitle = `${{ needs.issue-compliance.outputs.issue_title }}`;
-            const scopeReport = `${{ needs.issue-compliance.outputs.scope_report }}`;
-            const timestamp = new Date().toISOString();
-
-            // Maintainer / Release sync check
-            const isMaintainerPR = prAuthor.toLowerCase() === context.repo.owner.toLowerCase() || prAuthor.toLowerCase() === 'emarkees';
-            const isReleaseSync = pr.head.ref === 'develop' && pr.base.ref === 'main';
-
-            if (!issueCompliant || (!scanClean && !isReleaseSync)) {
-              let body = `## 🚨 PR Security Gate — REJECTED & CLOSED\n\n`;
-              body += `**PR:** #${prNumber} by @${prAuthor}\n`;
-              body += `**Time:** ${timestamp}\n\n`;
-              body += `---\n\n`;
-
-              if (!issueCompliant) {
-                body += `### 📋 Issue & Scope Compliance Failure\n${issueReason}\n\n`;
-              }
-              if (!scanClean) {
-                body += `### 🔬 Malicious Code & Threat Findings\n${scanReport}\n\n`;
-              }
-
-              body += `---\n`;
-              body += `> ⛔ **This PR has been automatically closed** to defend the repository against unauthorized or malicious additions.\n`;
-              body += `> If you believe this is an error, please reach out directly to the maintainer @emarkees.\n`;
-
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: body,
-              });
-
-              await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                state: 'closed',
-              });
-
-              try {
-                await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  labels: ['security-rejected'],
-                });
-              } catch (e) {}
-
-              core.setFailed(`PR #${prNumber} rejected and auto-closed.`);
-            } else {
-              let body = `## 🛡️ PR Security Gate — PASSED ✅\n\n`;
-              body += `**PR:** #${prNumber} by @${prAuthor}\n`;
-              body += `**Linked Issue:** #${linkedIssue} - *${issueTitle}*\n`;
-              body += `**Time:** ${timestamp}\n\n`;
-              body += `---\n\n`;
-              body += `### 🔍 Automated Verification Results:\n`;
-              body += `- ✅ **Approved Issue Assignment:** Verified @${prAuthor} is approved assignee for #${linkedIssue}.\n`;
-              body += `- ✅ **Scope Check:** ${scopeReport}\n`;
-              body += `- ✅ **Malware Scan:** Clean (no reverse shells, miners, keyloggers, exfiltration).\n`;
-              body += `- ✅ **Secret Leak Scan:** Clean (no Stellar S-keys or credentials).\n`;
-              body += `- ✅ **Integrity:** No unauthorized binary droppers or CI modifications.\n\n`;
-              body += `> ⏳ **Ready for maintainer manual review** (@emarkees). Continuous Integration tests can proceed.`;
-
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: body,
-              });
-
-              try {
-                await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  labels: ['security-passed'],
-                });
-              } catch (e) {}
-
-              console.log(`✅ PR #${prNumber} passed security gate.`);
-            }
+            const enforceGate = require('./scripts/ci/security_gate.js');
+            await enforceGate({ github, context, core });
