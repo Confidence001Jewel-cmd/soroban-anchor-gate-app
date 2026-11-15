@@ -318,7 +318,7 @@ jobs:
             fi
 
             # Obfuscated long base64 strings
-            if echo "$CONTENT" | grep -Pn '[A-Za-z0-9+/=]{250,}' 2>/dev/null | head -5; then
+            if echo "$CONTENT" | grep -Pqn '[A-Za-z0-9+/=]{250,}' 2>/dev/null; then
               if [[ "$file" != *"lock"* && "$file" != *".wasm"* ]]; then
                 FINDINGS="${FINDINGS}\n⚠️ **SUSPICIOUS** [\`$file\`]: Unusually long base64/encoded string (obfuscation risk)"
                 FOUND=1
@@ -438,6 +438,9 @@ jobs:
       # ── Verdict ─────────────────────────────────────────────────────────
       - name: "🏛️ Malicious Code Verdict"
         id: verdict
+        env:
+          PATTERN_FINDINGS: ${{ steps.pattern_scan.outputs.findings }}
+          FILE_FINDINGS: ${{ steps.file_check.outputs.findings }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -450,8 +453,12 @@ jobs:
 
             if (!patternClean) {
               clean = false;
-              const findings = `${{ steps.pattern_scan.outputs.findings }}`;
-              report += `\n### 🔬 Pattern Scan\n` + findings;
+              const rawFindings = process.env.PATTERN_FINDINGS || '';
+              try {
+                report += `\n### 🔬 Pattern Scan\n` + decodeURIComponent(rawFindings);
+              } catch (e) {
+                report += `\n### 🔬 Pattern Scan\n` + rawFindings;
+              }
             }
 
             if (gitleaksOutcome === 'failure') {
@@ -461,8 +468,12 @@ jobs:
 
             if (!fileClean) {
               clean = false;
-              const fileFindings = `${{ steps.file_check.outputs.findings }}`;
-              report += `\n### 📄 Binary/Payload Anomalies\n` + fileFindings;
+              const rawFileFindings = process.env.FILE_FINDINGS || '';
+              try {
+                report += `\n### 📄 Binary/Payload Anomalies\n` + decodeURIComponent(rawFileFindings);
+              } catch (e) {
+                report += `\n### 📄 Binary/Payload Anomalies\n` + rawFileFindings;
+              }
             }
 
             core.setOutput('is_clean', clean ? 'true' : 'false');
