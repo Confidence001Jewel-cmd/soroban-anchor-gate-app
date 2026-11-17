@@ -9,6 +9,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "install:web": "npm install",
+    "build:web": "next build",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/lib/*.test.ts"
