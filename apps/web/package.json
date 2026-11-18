@@ -13,7 +13,9 @@
     "build:web": "next build",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/*.test.ts"
+    "test": "tsx --test src/lib/*.test.ts",
+    "analyze": "next analyze",
+    "bundle-size": "node scripts/bundle-size.mjs"
   },
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",
