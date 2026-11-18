@@ -10,7 +10,7 @@ npm run build && npm run bundle-size   # gzip report + budget check
 
 `npm run bundle-size` sums the gzip size of every client chunk in `.next/static`
 and fails when the total exceeds the budget (450 KB by default; override with
-`BUNDLE_BUDGET_KB` or a CLI argument). CI runs it after the production build.
+`BUNDLE_BUDGET_KB` or a CLI argument).
 The analyzer is the one built into Next.js, so no extra dependency is needed.
 
 Baseline at the time of writing: ~337 KB gzip total client JS, dominated by

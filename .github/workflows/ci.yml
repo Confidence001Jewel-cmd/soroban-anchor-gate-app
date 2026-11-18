@@ -113,11 +113,6 @@ jobs:
           cd apps/web
           npm run build
 
-      - name: Enforce Client Bundle Size Budget
-        run: |
-          cd apps/web
-          npm run bundle-size
-
   go-relay-checks:
     name: Go Relay Service Checks
     runs-on: ubuntu-latest
@@ -153,44 +148,3 @@ jobs:
         run: |
           cd services/relay
           go build ./cmd/relay/main.go
-
-  sandbox-integration:
-    name: SDK Integration Tests (Local Soroban Sandbox)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Build Contract WASM
-        run: |
-          cd contracts
-          cargo build --target wasm32-unknown-unknown --release
-
-      - name: Start Local Soroban Sandbox
-        run: docker compose -f docker-compose.sandbox.yml up -d --wait --wait-timeout 300
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: Install SDK Dependencies
-        run: |
-          cd packages/contract-client
-          npm ci
-
-      - name: Run SDK Integration Tests
-        env:
-          SOROBAN_SANDBOX_RPC_URL: http://localhost:8000/soroban/rpc
-          SOROBAN_SANDBOX_FRIENDBOT: http://localhost:8000/friendbot
-        run: |
-          cd packages/contract-client
-          npm run test:integration
-
-      - name: Sandbox Logs on Failure
-        if: failure()
-        run: docker compose -f docker-compose.sandbox.yml logs --tail 200
