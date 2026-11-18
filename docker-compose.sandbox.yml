@@ -1,0 +1,21 @@
+# Local Soroban sandbox for SDK integration tests.
+#   docker compose -f docker-compose.sandbox.yml up -d --wait
+#   cd packages/contract-client && npm run test:integration
+services:
+  soroban-sandbox:
+    image: stellar/quickstart:latest
+    container_name: soroban-anchor-sandbox
+    command: ["--local", "--enable", "rpc"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sf -X POST -H 'Content-Type: application/json'
+          -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
+          http://localhost:8000/soroban/rpc | grep -q healthy
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s

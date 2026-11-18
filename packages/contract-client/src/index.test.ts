@@ -223,3 +223,4 @@ describe("EscrowGateClient & SDK Helpers", () => {
     assert.strictEqual(EscrowError.InvalidDisputeSplit, 12);
   });
 });
+import "./ttl.test";
