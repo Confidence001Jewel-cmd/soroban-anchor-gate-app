@@ -1,7 +1,8 @@
 /**
  * PR Security Gate Decision & Enforcement Module
- * Validates PR against compliance requirements and enforces auto-close only on malicious/security violations.
- * If PR is malware-free but has compliance/scope issues, leaves PR open and provides actionable contributor guidance.
+ * Validates PR against compliance and security requirements.
+ * Never auto-closes pull requests; instead leaves PR open and provides actionable,
+ * constructive guidance on what was flagged and exact steps to resolve it.
  */
 module.exports = async ({ github, context, core }) => {
   const pr = context.payload.pull_request;
@@ -23,7 +24,7 @@ module.exports = async ({ github, context, core }) => {
   const isDependabot = prAuthor.toLowerCase() === 'dependabot[bot]' || prAuthor.toLowerCase() === 'dependabot';
   const isReleaseSync = pr.head.ref === 'develop' && pr.base.ref === 'main';
 
-  // NEVER auto-close Dependabot, Maintainer, or Release Sync PRs
+  // NEVER block Dependabot, Maintainer, or Release Sync PRs
   if (isDependabot || isMaintainerPR || isReleaseSync) {
     const actorName = isDependabot ? 'Dependabot' : (isReleaseSync ? 'Release Sync' : 'Maintainer');
     console.log(`✅ ${actorName} PR verified for @${prAuthor}. Security gate automatically approved.`);
@@ -60,16 +61,36 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
-  // CASE 1: CRITICAL MALWARE, SECRET LEAK, OR THREAT DETECTED -> REJECT & AUTO-CLOSE
+  // CASE 1: SECURITY FINDINGS / SECRET LEAK DETECTED (KEEP PR OPEN & ADVISE CONTRIBUTOR)
   if (!scanClean) {
-    let body = `## 🚨 PR Security Gate — SECURITY THREAT DETECTED (CLOSED)\n\n`;
+    let body = `## ⚠️ PR Security Gate — Action Required: Secret / Security Finding\n\n`;
     body += `**PR:** #${prNumber} by @${prAuthor}\n`;
     body += `**Time:** ${timestamp}\n\n`;
     body += `---\n\n`;
-    body += `### 🔬 Security Threat Findings\n${scanReport}\n\n`;
-    body += `---\n`;
-    body += `> ⛔ **This PR has been automatically closed** to defend the repository against malicious code, leaked secrets, or dangerous binaries.\n`;
-    body += `> If you believe this is a false positive, please reach out directly to maintainer @emarkees.\n`;
+    body += `### 🔬 Security Findings\n${scanReport}\n\n`;
+    body += `---\n\n`;
+    body += `### 💡 Contributor Guidance — What Happened & How to Correct It:\n\n`;
+    body += `1. **What was flagged:**\n`;
+    body += `   - The automated security scanner detected potential sensitive credentials, private keys (such as Stellar \`S...\` keys), API tokens, or code execution anomalies in your changes or commit history.\n\n`;
+    body += `2. **Immediate Safety Steps:**\n`;
+    body += `   - If a real private key or production API token was committed, **revoke / rotate it immediately** with your service provider. Once pushed to GitHub, assume it is compromised.\n`;
+    body += `   - Never hardcode secrets in code, tests, or config. Use environment variable placeholders in \`.env.example\` instead (e.g., \`NEXT_PUBLIC_EXAMPLE_KEY=""\`).\n\n`;
+    body += `3. **How to Remove Secrets from Git History (Keep your PR open!):**\n`;
+    body += `   \`\`\`bash\n`;
+    body += `   # If the secret is in your latest commit:\n`;
+    body += `   # 1. Edit the file to remove/replace the secret\n`;
+    body += `   git add <modified-file>\n`;
+    body += `   git commit --amend --no-edit\n`;
+    body += `   git push --force-with-lease origin <your-branch>\n\n`;
+    body += `   # If the secret was committed in an earlier commit:\n`;
+    body += `   git rebase -i HEAD~<number-of-commits> # edit the commit that added the secret\n`;
+    body += `   git add <modified-file>\n`;
+    body += `   git rebase --continue\n`;
+    body += `   git push --force-with-lease origin <your-branch>\n`;
+    body += `   \`\`\`\n\n`;
+    body += `4. **Next Steps:**\n`;
+    body += `   - 🔄 **Your PR remains OPEN.** Once you amend/clean your commits and push the update, the security gate will automatically re-scan!\n`;
+    body += `   - If you believe this is a false positive (e.g. a public testnet address or non-sensitive mock string), ping maintainer @emarkees for verification.\n`;
 
     try {
       await github.rest.issues.createComment({
@@ -83,28 +104,35 @@ module.exports = async ({ github, context, core }) => {
     }
 
     try {
-      await github.rest.pulls.update({
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        pull_number: prNumber,
-        state: 'closed',
-      });
-    } catch (closeErr) {
-      console.error(`⚠️ Could not auto-close PR #${prNumber}: ${closeErr.message}`);
-    }
-
-    try {
       await github.rest.issues.addLabels({
         owner: context.repo.owner,
         repo: context.repo.repo,
         issue_number: prNumber,
-        labels: ['security-rejected'],
+        labels: ['needs-security-fix'],
       });
     } catch (labelErr) {
       console.error(`⚠️ Could not add label to PR #${prNumber}: ${labelErr.message}`);
     }
 
-    core.setFailed(`PR #${prNumber} rejected and auto-closed due to malicious code or secret leak detection.`);
+    try {
+      await github.rest.issues.removeLabel({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: prNumber,
+        name: 'security-rejected',
+      });
+    } catch {}
+
+    try {
+      await github.rest.issues.removeLabel({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: prNumber,
+        name: 'security-passed',
+      });
+    } catch {}
+
+    core.setFailed(`PR #${prNumber} requires security remediation before merge. See instructions in PR comment.`);
     return;
   }
 
@@ -181,6 +209,15 @@ module.exports = async ({ github, context, core }) => {
         owner: context.repo.owner,
         repo: context.repo.repo,
         issue_number: prNumber,
+        name: 'needs-security-fix',
+      });
+    } catch {}
+
+    try {
+      await github.rest.issues.removeLabel({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: prNumber,
         name: 'security-passed',
       });
     } catch {}
@@ -234,6 +271,15 @@ module.exports = async ({ github, context, core }) => {
       repo: context.repo.repo,
       issue_number: prNumber,
       name: 'needs-compliance',
+    });
+  } catch {}
+
+  try {
+    await github.rest.issues.removeLabel({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      issue_number: prNumber,
+      name: 'needs-security-fix',
     });
   } catch {}
 

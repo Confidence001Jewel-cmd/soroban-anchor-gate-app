@@ -1,0 +1,13 @@
+title = "SorobanAnchor Gate Gitleaks Configuration"
+
+[allowlist]
+description = "Allow example environment templates, public contract IDs, and public Stellar addresses"
+paths = [
+  '''.*\.env\.example$''',
+  '''^docs/.*''',
+  '''^evidence/.*'''
+]
+regexes = [
+  '''\bC[A-Z0-9]{55}\b''',
+  '''\bG[A-Z0-9]{55}\b'''
+]
