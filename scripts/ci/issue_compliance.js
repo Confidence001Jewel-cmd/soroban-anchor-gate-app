@@ -1,5 +1,7 @@
 /**
  * Issue Compliance and Architectural Scope Verification Module
+ * Validates PR against linked issues, author assignment, issue capacity (max 4),
+ * and architectural layer scope integrity.
  */
 module.exports = async ({ github, context, core }) => {
   const pr = context.payload.pull_request;
@@ -27,30 +29,55 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
-  // Step 1: Extract issue references
-  const issuePatterns = [
-    /(?:closes|fixes|resolves)\s+#(\d+)/gi,
-    /(?:close|fix|resolve)\s+#(\d+)/gi,
-    /\bLinked Issue:\s*(?:Closes\s+)?#(\d+)/gi,
-  ];
-
+  // Step 1: Extract all issue references (supports single, comma, 'and' separated, max 4)
   const issueNumbers = new Set();
-  for (const pattern of issuePatterns) {
-    let match;
-    while ((match = pattern.exec(prBody)) !== null) {
-      issueNumbers.add(parseInt(match[1]));
-    }
-    pattern.lastIndex = 0;
-    while ((match = pattern.exec(prTitle)) !== null) {
-      issueNumbers.add(parseInt(match[1]));
-    }
+
+  // Pattern A: Comma or 'and' separated lists e.g. "Closes #120, #121 and #122" or "Fixes #1, Fixes #2"
+  const multiIssueRegex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(#[0-9]+(?:\s*(?:,|and|\s)\s*#[0-9]+)*)/gi;
+  let match;
+  while ((match = multiIssueRegex.exec(prBody)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    if (nums) nums.forEach(n => issueNumbers.add(parseInt(n, 10)));
+  }
+  while ((match = multiIssueRegex.exec(prTitle)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    if (nums) nums.forEach(n => issueNumbers.add(parseInt(n, 10)));
   }
 
-  const branchMatch = branchName.match(/^wave\/(\d+)/);
-  if (branchMatch) {
-    issueNumbers.add(parseInt(branchMatch[1]));
+  // Pattern B: Standard individual keywords: "Closes #123", "Fixes: #123"
+  const singleRegex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/gi;
+  while ((match = singleRegex.exec(prBody)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
+  }
+  while ((match = singleRegex.exec(prTitle)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
   }
 
+  // Pattern C: Full issue URLs: "Closes https://github.com/Sorobo-Gate/soroban-anchor-gate-app/issues/123"
+  const urlRegex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)/gi;
+  while ((match = urlRegex.exec(prBody)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
+  }
+
+  // Pattern D: "Linked Issue: #42" or "Linked Issues: #42, #43"
+  const linkedRegex = /Linked\s+Issue[s]?\s*:\s*(?:(?:Closes|Fixes|Resolves)\s*)?(#[0-9]+(?:\s*(?:,|and|\s)\s*#[0-9]+)*)/gi;
+  while ((match = linkedRegex.exec(prBody)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    if (nums) nums.forEach(n => issueNumbers.add(parseInt(n, 10)));
+  }
+
+  // Pattern E: Branch names like wave/120 or feat/issues-120-123
+  const branchWave = branchName.match(/^wave\/(\d+)/);
+  if (branchWave) {
+    issueNumbers.add(parseInt(branchWave[1], 10));
+  }
+  const branchFeat = branchName.match(/(?:issue|wave)s?[-/](\d+)(?:[-_](\d+))?/i);
+  if (branchFeat) {
+    if (branchFeat[1]) issueNumbers.add(parseInt(branchFeat[1], 10));
+    if (branchFeat[2]) issueNumbers.add(parseInt(branchFeat[2], 10));
+  }
+
+  // Validation: Check if at least 1 issue was linked
   if (issueNumbers.size === 0) {
     core.setOutput('is_compliant', 'false');
     core.setOutput('linked_issue', '');
@@ -60,10 +87,24 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
-  // Step 2: Validate Issue Assignment
-  let validIssue = null;
-  let issueData = null;
+  // Validation: Enforce max 4 issues per PR to preserve security integrity & review depth
+  if (issueNumbers.size > 4) {
+    const foundList = Array.from(issueNumbers).map(n => `#${n}`).join(', ');
+    core.setOutput('is_compliant', 'false');
+    core.setOutput('linked_issue', foundList);
+    core.setOutput('failure_reason',
+      `❌ **Issue Capacity Exceeded (${issueNumbers.size} issues found: ${foundList}):**\n` +
+      `To maintain security integrity, prevent review fatigue, and verify that changes are thoroughly tested, ` +
+      `a single pull request may close a **maximum of 4 issues**.\n\n` +
+      `👉 Please split your work into smaller, focused pull requests (max 4 issues each).`);
+    return;
+  }
+
+  // Step 2: Validate Issue Assignment & Status for EVERY claimed issue
+  const validIssues = [];
+  const verifiedIssueDetails = [];
   const errors = [];
+  const allowedLayers = new Set();
 
   for (const issueNum of issueNumbers) {
     try {
@@ -80,54 +121,77 @@ module.exports = async ({ github, context, core }) => {
       }
 
       if (iss.state !== 'open') {
-        errors.push(`#${issueNum} is closed. Contributions for closed issues are rejected.`);
+        errors.push(`#${issueNum} is closed. Work cannot be submitted for already closed issues.`);
         continue;
       }
 
-      const assignees = iss.assignees.map(a => a.login.toLowerCase());
+      const assignees = (iss.assignees || []).map(a => a.login.toLowerCase());
       if (!assignees.includes(prAuthor.toLowerCase())) {
         errors.push(
           `#${issueNum} is not assigned to @${prAuthor}. ` +
           `Assigned to: ${assignees.length ? assignees.map(a => '@' + a).join(', ') : 'none'}. ` +
-          `You must be approved & assigned to the issue before working on it.`
+          `You must be approved and assigned by maintainers before submitting work.`
         );
         continue;
       }
 
-      validIssue = issueNum;
-      issueData = iss;
-      break;
+      validIssues.push(issueNum);
+      verifiedIssueDetails.push(iss);
+
+      const issueBody = iss.body || '';
+      const issueTitle = iss.title || '';
+
+      let layerDetected = false;
+      if (issueBody.includes('Smart Contracts (contracts/)') || issueTitle.toLowerCase().includes('contract')) {
+        allowedLayers.add('contracts');
+        layerDetected = true;
+      }
+      if (issueBody.includes('Frontend Web App (apps/web/)') || issueTitle.toLowerCase().includes('frontend') || issueTitle.toLowerCase().includes('ui')) {
+        allowedLayers.add('web');
+        layerDetected = true;
+      }
+      if (issueBody.includes('Contract Client SDK (packages/contract-client/)') || issueTitle.toLowerCase().includes('sdk')) {
+        allowedLayers.add('sdk');
+        layerDetected = true;
+      }
+      if (issueBody.includes('Relay Daemon (services/relay/)') || issueTitle.toLowerCase().includes('relay')) {
+        allowedLayers.add('relay');
+        layerDetected = true;
+      }
+      if (issueBody.includes('Documentation & Evidence (docs/, evidence/)') || issueTitle.toLowerCase().includes('doc') || issueTitle.toLowerCase().includes('evidence')) {
+        allowedLayers.add('docs');
+        layerDetected = true;
+      }
+
+      if (!layerDetected) {
+        allowedLayers.add('all');
+      }
     } catch (err) {
       errors.push(`Issue #${issueNum} query failed: ${err.message}`);
     }
   }
 
-  if (!validIssue || !issueData) {
+  // If ANY linked issue failed assignment or is closed, fail the whole PR
+  if (errors.length > 0 || validIssues.length !== issueNumbers.size) {
+    const listStr = Array.from(issueNumbers).map(n => `#${n}`).join(', ');
     core.setOutput('is_compliant', 'false');
-    core.setOutput('linked_issue', '');
-    core.setOutput('failure_reason', '❌ **Issue compliance check failed:**\n' + errors.map(e => `- ${e}`).join('\n'));
+    core.setOutput('linked_issue', listStr);
+    core.setOutput('failure_reason',
+      `❌ **Issue verification failed for [${listStr}]:**\n` +
+      errors.map(e => `- ${e}`).join('\n') +
+      '\n\n> 🛡️ **Integrity Rule:** Every claimed issue must be open, existing, and officially assigned to you.'
+    );
     return;
   }
 
-  // Step 3: Branch naming check
-  const branchRegex = /^wave\/\d+-[\w-]+$/;
+  // Step 3: Branch naming check (informational notice)
+  const branchRegex = /^(?:wave\/\d+-[\w-]+|feat\/[\w-]+)$/i;
   let branchNotice = '';
   if (!branchRegex.test(branchName)) {
-    branchNotice = `\n⚠️ **Branch naming notice:** Branch \`${branchName}\` does not strictly follow \`wave/<issue>-<short-description>\`.`;
+    branchNotice = `\n⚠️ **Branch naming notice:** Branch \`${branchName}\` does not follow recommended \`wave/<issue>-<description>\` pattern.`;
   }
 
-  // Step 4: Issue Scope Extraction
-  const issueBody = issueData.body || '';
-  const issueTitle = issueData.title || '';
-
-  let targetLayer = 'all';
-  if (issueBody.includes('Smart Contracts (contracts/)')) targetLayer = 'contracts';
-  else if (issueBody.includes('Frontend Web App (apps/web/)')) targetLayer = 'web';
-  else if (issueBody.includes('Contract Client SDK (packages/contract-client/)')) targetLayer = 'sdk';
-  else if (issueBody.includes('Relay Daemon (services/relay/)')) targetLayer = 'relay';
-  else if (issueBody.includes('Documentation & Evidence (docs/, evidence/)')) targetLayer = 'docs';
-
-  // Step 5: Check PR Changed Files
+  // Step 4: Check PR Changed Files against combined architectural scope
   const prFiles = await github.paginate(github.rest.pulls.listFiles, {
     owner: context.repo.owner,
     repo: context.repo.repo,
@@ -140,54 +204,62 @@ module.exports = async ({ github, context, core }) => {
   const outOfScopeFiles = [];
 
   for (const path of changedPaths) {
-    if (path.startsWith('.github/workflows/') || path.startsWith('.github/CODEOWNERS')) {
-      if (targetLayer !== 'all' && !issueTitle.toLowerCase().includes('ci') && !issueTitle.toLowerCase().includes('workflow')) {
-        forbiddenFiles.push(path);
-      }
+    // STRICT RULE: Contributors must NEVER modify CI workflows, security gate files, or CODEOWNERS
+    if (path.startsWith('.github/') || path.startsWith('scripts/ci/')) {
+      forbiddenFiles.push(path);
+      continue;
     }
 
-    if (targetLayer === 'contracts') {
-      if (!path.startsWith('contracts/') && !path.startsWith('evidence/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'web') {
-      if (!path.startsWith('apps/web/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'sdk') {
-      if (!path.startsWith('packages/contract-client/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'relay') {
-      if (!path.startsWith('services/relay/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'docs') {
-      if (!path.endsWith('.md') && !path.startsWith('docs/') && !path.startsWith('evidence/')) {
-        outOfScopeFiles.push(path);
-      }
+    if (allowedLayers.has('all')) {
+      continue;
+    }
+
+    let inScope = false;
+    if (allowedLayers.has('contracts') && (path.startsWith('contracts/') || path.startsWith('evidence/') || path.endsWith('.md'))) {
+      inScope = true;
+    }
+    if (allowedLayers.has('web') && (path.startsWith('apps/web/') || path.endsWith('.md'))) {
+      inScope = true;
+    }
+    if (allowedLayers.has('sdk') && (path.startsWith('packages/contract-client/') || path.endsWith('.md'))) {
+      inScope = true;
+    }
+    if (allowedLayers.has('relay') && (path.startsWith('services/relay/') || path.endsWith('.md'))) {
+      inScope = true;
+    }
+    if (allowedLayers.has('docs') && (path.endsWith('.md') || path.startsWith('docs/') || path.startsWith('evidence/'))) {
+      inScope = true;
+    }
+
+    if (!inScope) {
+      outOfScopeFiles.push(path);
     }
   }
 
   if (forbiddenFiles.length > 0) {
     core.setOutput('is_compliant', 'false');
-    core.setOutput('linked_issue', String(validIssue));
+    core.setOutput('linked_issue', validIssues.map(n => `#${n}`).join(', '));
     core.setOutput('failure_reason',
-      `🚨 **Critical Scope Violation:** PR modifies repository infrastructure / security files not authorized by issue #${validIssue}:\n` +
-      forbiddenFiles.map(f => `- \`${f}\``).join('\n'));
+      `🚨 **Critical Security Violation:** PR modifies repository infrastructure, CI workflows, or security gate files:\n` +
+      forbiddenFiles.map(f => `- \`${f}\``).join('\n') +
+      `\n\n> 🛡️ Modifying CI workflows or security verification scripts is strictly reserved for repository maintainers.`);
     return;
   }
 
-  let scopeReport = `Target layer verified: **${targetLayer}**. ${changedPaths.length} files changed.`;
+  const layerList = Array.from(allowedLayers).join(', ');
+  let scopeReport = `Verified **${validIssues.length}** issue(s): ${validIssues.map(n => '#' + n).join(', ')}.\n` +
+    `- **Authorized Architecture Layer(s):** \`${layerList}\`\n` +
+    `- **Total Changed Files:** ${changedPaths.length}`;
+
   if (outOfScopeFiles.length > 0) {
-    scopeReport += `\n⚠️ **Notice (Potential scope creep):** The following files are outside the target layer \`${targetLayer}\`:\n` +
+    scopeReport += `\n⚠️ **Notice (Potential scope creep):** Files outside designated layers [\`${layerList}\`]:\n` +
       outOfScopeFiles.slice(0, 10).map(f => `- \`${f}\``).join('\n');
   }
 
   core.setOutput('is_compliant', 'true');
-  core.setOutput('linked_issue', String(validIssue));
-  core.setOutput('issue_title', issueTitle);
-  core.setOutput('issue_layer', targetLayer);
+  core.setOutput('linked_issue', validIssues.map(n => `#${n}`).join(', '));
+  core.setOutput('issue_title', verifiedIssueDetails.map(iss => `#${iss.number}: ${iss.title}`).join(' | '));
+  core.setOutput('issue_layer', layerList);
   core.setOutput('scope_report', scopeReport);
   core.setOutput('failure_reason', branchNotice);
 };
