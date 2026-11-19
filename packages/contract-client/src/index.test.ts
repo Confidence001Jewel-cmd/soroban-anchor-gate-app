@@ -6,8 +6,11 @@ import {
   EscrowError,
   computeProfileHash,
   formatTokenAmount,
+  fromStroops,
+  getAnchorExchangeQuote,
   isValidAddress,
   parseTokenAmount,
+  toStroops,
   validateClientConfig,
   validateProfileHashHex,
 } from "./index";
@@ -222,5 +225,13 @@ describe("EscrowGateClient & SDK Helpers", () => {
     assert.strictEqual(EscrowError.TokenNotWhitelisted, 11);
     assert.strictEqual(EscrowError.InvalidDisputeSplit, 12);
   });
+
+  test("entry point re-exports units and SEP-38 helpers", () => {
+    assert.strictEqual(toStroops("10.50"), 105_000_000n);
+    assert.strictEqual(fromStroops(105_000_000n), "10.5");
+    assert.strictEqual(typeof getAnchorExchangeQuote, "function");
+  });
 });
 import "./ttl.test";
+import "./units.test";
+import "./sep38.test";
