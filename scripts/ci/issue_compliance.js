@@ -82,21 +82,23 @@ module.exports = async ({ github, context, core }) => {
     core.setOutput('is_compliant', 'false');
     core.setOutput('linked_issue', '');
     core.setOutput('failure_reason',
-      '❌ **No linked issue found.** Your PR must reference an approved GitHub issue ' +
-      '(e.g., `Closes #42` in description) and branch must follow `wave/<issue-number>-<short-description>`.');
+      '❌ **No linked issue found.**\n' +
+      '- **Action required:** Your PR description must reference an approved GitHub issue (e.g. `Closes #42` or `Closes #10, #11`).\n' +
+      `- **Where to find issues:** Browse open sprint tasks at https://github.com/${context.repo.owner}/${context.repo.repo}/issues?q=is%3Aissue+is%3Aopen+label%3Adrips-wave\n` +
+      '- **Branch naming:** Recommended branch format is `wave/<issue-number>-<short-description>`.');
     return;
   }
 
   // Validation: Enforce max 4 issues per PR to preserve security integrity & review depth
   if (issueNumbers.size > 4) {
     const foundList = Array.from(issueNumbers).map(n => `#${n}`).join(', ');
+    const firstFour = Array.from(issueNumbers).slice(0, 4).map(n => `#${n}`).join(', ');
     core.setOutput('is_compliant', 'false');
     core.setOutput('linked_issue', foundList);
     core.setOutput('failure_reason',
       `❌ **Issue Capacity Exceeded (${issueNumbers.size} issues found: ${foundList}):**\n` +
-      `To maintain security integrity, prevent review fatigue, and verify that changes are thoroughly tested, ` +
-      `a single pull request may close a **maximum of 4 issues**.\n\n` +
-      `👉 Please split your work into smaller, focused pull requests (max 4 issues each).`);
+      `- Contributors may close a **maximum of 4 issues per PR** to maintain review quality and system integrity.\n` +
+      `- **Action required:** Edit your PR description to only include up to 4 issues (e.g. keep ${firstFour}), and open a new pull request for the remaining issue(s).`);
     return;
   }
 
@@ -129,8 +131,7 @@ module.exports = async ({ github, context, core }) => {
       if (!assignees.includes(prAuthor.toLowerCase())) {
         errors.push(
           `#${issueNum} is not assigned to @${prAuthor}. ` +
-          `Assigned to: ${assignees.length ? assignees.map(a => '@' + a).join(', ') : 'none'}. ` +
-          `You must be approved and assigned by maintainers before submitting work.`
+          `Assigned to: ${assignees.length ? assignees.map(a => '@' + a).join(', ') : 'none'}.`
         );
         continue;
       }
@@ -171,7 +172,7 @@ module.exports = async ({ github, context, core }) => {
     }
   }
 
-  // If ANY linked issue failed assignment or is closed, fail the whole PR
+  // If ANY linked issue failed assignment or is closed, fail compliance
   if (errors.length > 0 || validIssues.length !== issueNumbers.size) {
     const listStr = Array.from(issueNumbers).map(n => `#${n}`).join(', ');
     core.setOutput('is_compliant', 'false');
@@ -179,8 +180,10 @@ module.exports = async ({ github, context, core }) => {
     core.setOutput('failure_reason',
       `❌ **Issue verification failed for [${listStr}]:**\n` +
       errors.map(e => `- ${e}`).join('\n') +
-      '\n\n> 🛡️ **Integrity Rule:** Every claimed issue must be open, existing, and officially assigned to you.'
-    );
+      '\n\n- **Action required:**\n' +
+      '  - Ensure each issue is open and not already resolved.\n' +
+      '  - Comment on the issue to request official assignment from maintainer @emarkees before submitting a PR.\n' +
+      '  - If you intended to work on another issue, update your PR description with the correct issue number.');
     return;
   }
 
@@ -240,9 +243,13 @@ module.exports = async ({ github, context, core }) => {
     core.setOutput('is_compliant', 'false');
     core.setOutput('linked_issue', validIssues.map(n => `#${n}`).join(', '));
     core.setOutput('failure_reason',
-      `🚨 **Critical Security Violation:** PR modifies repository infrastructure, CI workflows, or security gate files:\n` +
+      `🚨 **Unauthorized Infrastructure Changes:**\n` +
+      `Your PR modifies CI workflows or security scripts which are strictly reserved for maintainers:\n` +
       forbiddenFiles.map(f => `- \`${f}\``).join('\n') +
-      `\n\n> 🛡️ Modifying CI workflows or security verification scripts is strictly reserved for repository maintainers.`);
+      '\n\n- **Action required:** Revert these files to the base branch using:\n' +
+      '  `git checkout origin/develop -- ' + forbiddenFiles.join(' ') + '`\n' +
+      '  `git commit -m "revert unauthorized workflow/CI changes"`\n' +
+      '  `git push`');
     return;
   }
 
