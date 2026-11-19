@@ -9,14 +9,14 @@
 name: "🛡️ PR Security Gate"
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
     branches: [develop, main]
 
 permissions:
   contents: read
   pull-requests: write
-  issues: read
+  issues: write
 
 concurrency:
   group: pr-security-${{ github.event.pull_request.number }}
@@ -38,7 +38,7 @@ jobs:
       scope_report: ${{ steps.check.outputs.scope_report }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Validate PR ↔ Issue linkage and Scope
         id: check
@@ -59,21 +59,27 @@ jobs:
       is_clean: ${{ steps.verdict.outputs.is_clean }}
       scan_report: ${{ steps.verdict.outputs.scan_report }}
     steps:
-      - name: Checkout PR code
-        uses: actions/checkout@v7
+      - name: Checkout base repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout PR head for scanning
+        run: |
+          git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-head
+          git checkout pr-head
+          # Restore trusted CI scripts from base branch to prevent scanner hijacking
+          git checkout origin/${{ github.event.pull_request.base.ref }} -- scripts/ci
 
       - name: Get changed files
         id: changed
         run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }}
           CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
           echo "files<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # ── Layer 1: Pattern-based malware detection ────────────────────────
+      # ── Layer 1: Pattern-based malware scan ────────────────────────
       - name: "Layer 1 — Pattern-based malware scan"
         id: pattern_scan
         run: |
@@ -253,7 +259,7 @@ jobs:
     if: always()
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: "Enforce Gate: Report & Auto-Close if Malicious/Non-compliant"
         env:

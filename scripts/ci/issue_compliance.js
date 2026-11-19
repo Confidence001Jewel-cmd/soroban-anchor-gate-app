@@ -1,5 +1,7 @@
 /**
  * Issue Compliance and Architectural Scope Verification Module
+ * Validates PR against linked issues, author assignment, issue capacity (max 4),
+ * and architectural layer scope integrity.
  */
 module.exports = async ({ github, context, core }) => {
   const pr = context.payload.pull_request;
@@ -27,43 +29,92 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
-  // Step 1: Extract issue references
-  const issuePatterns = [
-    /(?:closes|fixes|resolves)\s+#(\d+)/gi,
-    /(?:close|fix|resolve)\s+#(\d+)/gi,
-    /\bLinked Issue:\s*(?:Closes\s+)?#(\d+)/gi,
-  ];
-
+  // Step 1: Extract all issue references (supports single, comma, 'and' separated, max 4)
   const issueNumbers = new Set();
-  for (const pattern of issuePatterns) {
-    let match;
-    while ((match = pattern.exec(prBody)) !== null) {
-      issueNumbers.add(parseInt(match[1]));
-    }
-    pattern.lastIndex = 0;
-    while ((match = pattern.exec(prTitle)) !== null) {
-      issueNumbers.add(parseInt(match[1]));
-    }
+
+  // Pattern A: Comma or 'and' separated lists e.g. "Closes #120, #121 and #122" or "Fixes #1, Fixes #2"
+  const multiIssueRegex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(#[0-9]+(?:\s*(?:,|and|\s)\s*#[0-9]+)*)/gi;
+  let match;
+  while ((match = multiIssueRegex.exec(prBody)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    if (nums) nums.forEach(n => issueNumbers.add(parseInt(n, 10)));
+  }
+  while ((match = multiIssueRegex.exec(prTitle)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    if (nums) nums.forEach(n => issueNumbers.add(parseInt(n, 10)));
   }
 
-  const branchMatch = branchName.match(/^wave\/(\d+)/);
-  if (branchMatch) {
-    issueNumbers.add(parseInt(branchMatch[1]));
+  // Pattern B: Standard individual keywords: "Closes #123", "Fixes: #123"
+  const singleRegex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/gi;
+  while ((match = singleRegex.exec(prBody)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
+  }
+  while ((match = singleRegex.exec(prTitle)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
   }
 
+  // Pattern C: Full issue URLs: "Closes https://github.com/Sorobo-Gate/soroban-anchor-gate-app/issues/123"
+  const urlRegex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*https?:\/\/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)/gi;
+  while ((match = urlRegex.exec(prBody)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
+  }
+
+  // Pattern D: "Linked Issue: #42" or "Linked Issues: #42, #43"
+  const linkedRegex = /Linked\s+Issue[s]?\s*:\s*(?:(?:Closes|Fixes|Resolves)\s*)?(#[0-9]+(?:\s*(?:,|and|\s)\s*#[0-9]+)*)/gi;
+  while ((match = linkedRegex.exec(prBody)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    if (nums) nums.forEach(n => issueNumbers.add(parseInt(n, 10)));
+  }
+
+  // Pattern E: Branch names like wave/120 or feat/issues-120-123
+  const branchWave = branchName.match(/^wave\/(\d+)/);
+  if (branchWave) {
+    issueNumbers.add(parseInt(branchWave[1], 10));
+  }
+  const branchFeat = branchName.match(/(?:issue|wave)s?[-/](\d+)(?:[-_](\d+))?/i);
+  if (branchFeat) {
+    if (branchFeat[1]) issueNumbers.add(parseInt(branchFeat[1], 10));
+    if (branchFeat[2]) issueNumbers.add(parseInt(branchFeat[2], 10));
+  }
+
+  // Validation: Check if at least 1 issue was linked
   if (issueNumbers.size === 0) {
     core.setOutput('is_compliant', 'false');
     core.setOutput('linked_issue', '');
     core.setOutput('failure_reason',
-      '❌ **No linked issue found.** Your PR must reference an approved GitHub issue ' +
-      '(e.g., `Closes #42` in description) and branch must follow `wave/<issue-number>-<short-description>`.');
+      '❌ **No linked issue found.**\n' +
+      '- **Action required:** Your PR description must reference an approved GitHub issue (e.g. `Closes #42` or `Closes #10, #11`).\n' +
+      `- **Where to find issues:** Browse open sprint tasks at https://github.com/${context.repo.owner}/${context.repo.repo}/issues?q=is%3Aissue+is%3Aopen+label%3Adrips-wave\n` +
+      '- **Branch naming:** Recommended branch format is `wave/<issue-number>-<short-description>`.');
     return;
   }
 
-  // Step 2: Validate Issue Assignment
-  let validIssue = null;
-  let issueData = null;
+  // Validation: Enforce max 4 issues per PR to preserve security integrity & review depth
+  if (issueNumbers.size > 4) {
+    const foundList = Array.from(issueNumbers).map(n => `#${n}`).join(', ');
+    const firstFour = Array.from(issueNumbers).slice(0, 4).map(n => `#${n}`).join(', ');
+    core.setOutput('is_compliant', 'false');
+    core.setOutput('linked_issue', foundList);
+    core.setOutput('failure_reason',
+      `❌ **Issue Capacity Exceeded (${issueNumbers.size} issues found: ${foundList}):**\n` +
+      `- Contributors may close a **maximum of 4 issues per PR** to maintain review quality and system integrity.\n` +
+      `- **Action required:** Edit your PR description to only include up to 4 issues (e.g. keep ${firstFour}), and open a new pull request for the remaining issue(s).`);
+    return;
+  }
+
+  // Step 2: Validate Issue Assignment & Status for EVERY claimed issue
+  const validIssues = [];
+  const verifiedIssueDetails = [];
   const errors = [];
+  const allowedLayers = new Set();
+
+  const layerInfo = {
+    contracts: { name: 'Smart Contracts', dir: 'contracts/' },
+    web: { name: 'Frontend Web App', dir: 'apps/web/' },
+    sdk: { name: 'Contract Client SDK', dir: 'packages/contract-client/' },
+    relay: { name: 'Go Relay Daemon', dir: 'services/relay/' },
+    docs: { name: 'Documentation & Evidence', dir: 'docs/, evidence/' }
+  };
 
   for (const issueNum of issueNumbers) {
     try {
@@ -80,54 +131,80 @@ module.exports = async ({ github, context, core }) => {
       }
 
       if (iss.state !== 'open') {
-        errors.push(`#${issueNum} is closed. Contributions for closed issues are rejected.`);
+        errors.push(`#${issueNum} is closed. Work cannot be submitted for already closed issues.`);
         continue;
       }
 
-      const assignees = iss.assignees.map(a => a.login.toLowerCase());
+      const assignees = (iss.assignees || []).map(a => a.login.toLowerCase());
       if (!assignees.includes(prAuthor.toLowerCase())) {
         errors.push(
           `#${issueNum} is not assigned to @${prAuthor}. ` +
-          `Assigned to: ${assignees.length ? assignees.map(a => '@' + a).join(', ') : 'none'}. ` +
-          `You must be approved & assigned to the issue before working on it.`
+          `Assigned to: ${assignees.length ? assignees.map(a => '@' + a).join(', ') : 'none'}.`
         );
         continue;
       }
 
-      validIssue = issueNum;
-      issueData = iss;
-      break;
+      validIssues.push(issueNum);
+      verifiedIssueDetails.push(iss);
+
+      const issueBody = iss.body || '';
+      const issueTitle = iss.title || '';
+      const issueLabels = (iss.labels || []).map(l => (typeof l === 'string' ? l : l.name || '').toLowerCase());
+      const allText = `${issueTitle} ${issueBody} ${issueLabels.join(' ')}`.toLowerCase();
+
+      let layerDetected = false;
+      if (allText.includes('contracts') || allText.includes('contract') || allText.includes('soroban')) {
+        allowedLayers.add('contracts');
+        layerDetected = true;
+      }
+      if (allText.includes('web') || allText.includes('frontend') || allText.includes('ui') || allText.includes('dashboard')) {
+        allowedLayers.add('web');
+        layerDetected = true;
+      }
+      if (allText.includes('sdk') || allText.includes('client')) {
+        allowedLayers.add('sdk');
+        layerDetected = true;
+      }
+      if (allText.includes('relay') || allText.includes('daemon')) {
+        allowedLayers.add('relay');
+        layerDetected = true;
+      }
+      if (allText.includes('doc') || allText.includes('evidence') || allText.includes('playbook')) {
+        allowedLayers.add('docs');
+        layerDetected = true;
+      }
+
+      if (!layerDetected) {
+        allowedLayers.add('all');
+      }
     } catch (err) {
       errors.push(`Issue #${issueNum} query failed: ${err.message}`);
     }
   }
 
-  if (!validIssue || !issueData) {
+  // If ANY linked issue failed assignment or is closed, fail compliance
+  if (errors.length > 0 || validIssues.length !== issueNumbers.size) {
+    const listStr = Array.from(issueNumbers).map(n => `#${n}`).join(', ');
     core.setOutput('is_compliant', 'false');
-    core.setOutput('linked_issue', '');
-    core.setOutput('failure_reason', '❌ **Issue compliance check failed:**\n' + errors.map(e => `- ${e}`).join('\n'));
+    core.setOutput('linked_issue', listStr);
+    core.setOutput('failure_reason',
+      `❌ **Issue verification failed for [${listStr}]:**\n` +
+      errors.map(e => `- ${e}`).join('\n') +
+      '\n\n- **Action required:**\n' +
+      '  - Ensure each issue is open and not already resolved.\n' +
+      '  - Comment on the issue to request official assignment from maintainer @emarkees before submitting a PR.\n' +
+      '  - If you intended to work on another issue, update your PR description with the correct issue number.');
     return;
   }
 
-  // Step 3: Branch naming check
-  const branchRegex = /^wave\/\d+-[\w-]+$/;
+  // Step 3: Branch naming check (informational notice)
+  const branchRegex = /^(?:wave\/\d+-[\w-]+|feat\/[\w-]+)$/i;
   let branchNotice = '';
   if (!branchRegex.test(branchName)) {
-    branchNotice = `\n⚠️ **Branch naming notice:** Branch \`${branchName}\` does not strictly follow \`wave/<issue>-<short-description>\`.`;
+    branchNotice = `\n⚠️ **Branch naming notice:** Branch \`${branchName}\` does not follow recommended \`wave/<issue>-<description>\` pattern.`;
   }
 
-  // Step 4: Issue Scope Extraction
-  const issueBody = issueData.body || '';
-  const issueTitle = issueData.title || '';
-
-  let targetLayer = 'all';
-  if (issueBody.includes('Smart Contracts (contracts/)')) targetLayer = 'contracts';
-  else if (issueBody.includes('Frontend Web App (apps/web/)')) targetLayer = 'web';
-  else if (issueBody.includes('Contract Client SDK (packages/contract-client/)')) targetLayer = 'sdk';
-  else if (issueBody.includes('Relay Daemon (services/relay/)')) targetLayer = 'relay';
-  else if (issueBody.includes('Documentation & Evidence (docs/, evidence/)')) targetLayer = 'docs';
-
-  // Step 5: Check PR Changed Files
+  // Step 4: Check PR Changed Files against combined architectural scope
   const prFiles = await github.paginate(github.rest.pulls.listFiles, {
     owner: context.repo.owner,
     repo: context.repo.repo,
@@ -140,54 +217,93 @@ module.exports = async ({ github, context, core }) => {
   const outOfScopeFiles = [];
 
   for (const path of changedPaths) {
-    if (path.startsWith('.github/workflows/') || path.startsWith('.github/CODEOWNERS')) {
-      if (targetLayer !== 'all' && !issueTitle.toLowerCase().includes('ci') && !issueTitle.toLowerCase().includes('workflow')) {
-        forbiddenFiles.push(path);
-      }
+    // STRICT RULE: Contributors must NEVER modify CI workflows, security gate files, or CODEOWNERS
+    if (path.startsWith('.github/') || path.startsWith('scripts/ci/')) {
+      forbiddenFiles.push(path);
+      continue;
     }
 
-    if (targetLayer === 'contracts') {
-      if (!path.startsWith('contracts/') && !path.startsWith('evidence/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'web') {
-      if (!path.startsWith('apps/web/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'sdk') {
-      if (!path.startsWith('packages/contract-client/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'relay') {
-      if (!path.startsWith('services/relay/') && !path.endsWith('.md')) {
-        outOfScopeFiles.push(path);
-      }
-    } else if (targetLayer === 'docs') {
-      if (!path.endsWith('.md') && !path.startsWith('docs/') && !path.startsWith('evidence/')) {
-        outOfScopeFiles.push(path);
-      }
+    if (allowedLayers.has('all')) {
+      continue;
+    }
+
+    let inScope = false;
+    // evidence/ and markdown documentation are always permitted across any layer
+    if (path.startsWith('evidence/') || path.endsWith('.md')) {
+      inScope = true;
+    } else if (allowedLayers.has('contracts') && path.startsWith('contracts/')) {
+      inScope = true;
+    } else if (allowedLayers.has('web') && path.startsWith('apps/web/')) {
+      inScope = true;
+    } else if (allowedLayers.has('sdk') && path.startsWith('packages/contract-client/')) {
+      inScope = true;
+    } else if (allowedLayers.has('relay') && path.startsWith('services/relay/')) {
+      inScope = true;
+    } else if (allowedLayers.has('docs') && path.startsWith('docs/')) {
+      inScope = true;
+    }
+
+    if (!inScope) {
+      outOfScopeFiles.push(path);
     }
   }
 
   if (forbiddenFiles.length > 0) {
     core.setOutput('is_compliant', 'false');
-    core.setOutput('linked_issue', String(validIssue));
+    core.setOutput('linked_issue', validIssues.map(n => `#${n}`).join(', '));
     core.setOutput('failure_reason',
-      `🚨 **Critical Scope Violation:** PR modifies repository infrastructure / security files not authorized by issue #${validIssue}:\n` +
-      forbiddenFiles.map(f => `- \`${f}\``).join('\n'));
+      `🚨 **Unauthorized Infrastructure Changes:**\n` +
+      `Your PR modifies CI workflows or security scripts which are strictly reserved for maintainers:\n` +
+      forbiddenFiles.map(f => `- \`${f}\``).join('\n') +
+      '\n\n- **Action required:** Revert these files to the base branch using:\n' +
+      '  `git checkout origin/develop -- ' + forbiddenFiles.join(' ') + '`\n' +
+      '  `git commit -m "revert unauthorized workflow/CI changes"`\n' +
+      '  `git push`');
     return;
   }
 
-  let scopeReport = `Target layer verified: **${targetLayer}**. ${changedPaths.length} files changed.`;
+  // Strict Scope Check: If files are modified outside assigned layer, block merge and advise contributor
   if (outOfScopeFiles.length > 0) {
-    scopeReport += `\n⚠️ **Notice (Potential scope creep):** The following files are outside the target layer \`${targetLayer}\`:\n` +
-      outOfScopeFiles.slice(0, 10).map(f => `- \`${f}\``).join('\n');
+    const allowedDisplay = Array.from(allowedLayers)
+      .map(l => layerInfo[l] ? `\`${layerInfo[l].dir}\` (${layerInfo[l].name})` : `\`${l}\``)
+      .join(' or ');
+
+    const fileList = outOfScopeFiles.slice(0, 15).map(f => `- \`${f}\``).join('\n');
+    const moreNotice = outOfScopeFiles.length > 15 ? `\n...and ${outOfScopeFiles.length - 15} more file(s)` : '';
+    const quoteList = outOfScopeFiles.slice(0, 10).map(f => `"${f}"`).join(' ');
+
+    let failureMsg = `⚠️ **Scope Violation: Files Modified Outside Assigned Architectural Layer**\n\n`;
+    failureMsg += `Your linked issue(s) (${validIssues.map(n => '#' + n).join(', ')}) authorize changes only within:\n`;
+    failureMsg += `> 🎯 **Where to work (Allowed):** ${allowedDisplay} (plus \`evidence/\` for test proofs and \`.md\` docs)\n\n`;
+    failureMsg += `### 🚫 What to delete or revert (${outOfScopeFiles.length} out-of-scope file${outOfScopeFiles.length > 1 ? 's' : ''}):\n`;
+    failureMsg += `${fileList}${moreNotice}\n\n`;
+    failureMsg += `### 🛠️ How to Resolve (Keep your PR open and run these in terminal):\n\n`;
+    failureMsg += `\`\`\`bash\n`;
+    failureMsg += `# 1. Revert out-of-scope files back to develop:\n`;
+    failureMsg += `git checkout origin/develop -- ${quoteList}\n\n`;
+    failureMsg += `# (If you added new files that don't belong, delete them with: git rm -f <path>)\n\n`;
+    failureMsg += `# 2. Commit your cleanup:\n`;
+    failureMsg += `git commit -m "refactor: remove out-of-scope files to match assigned issue"\n\n`;
+    failureMsg += `# 3. Push to your PR branch:\n`;
+    failureMsg += `git push\n`;
+    failureMsg += `\`\`\`\n\n`;
+    failureMsg += `> 💡 **Notice:** Your PR remains **OPEN**. Once you push this cleanup, the security compliance check will re-run automatically!`;
+
+    core.setOutput('is_compliant', 'false');
+    core.setOutput('linked_issue', validIssues.map(n => `#${n}`).join(', '));
+    core.setOutput('failure_reason', failureMsg);
+    return;
   }
 
+  const layerList = Array.from(allowedLayers).join(', ');
+  const scopeReport = `Verified **${validIssues.length}** issue(s): ${validIssues.map(n => '#' + n).join(', ')}.\n` +
+    `- **Authorized Architecture Layer(s):** \`${layerList}\`\n` +
+    `- **Total Changed Files:** ${changedPaths.length}`;
+
   core.setOutput('is_compliant', 'true');
-  core.setOutput('linked_issue', String(validIssue));
-  core.setOutput('issue_title', issueTitle);
-  core.setOutput('issue_layer', targetLayer);
+  core.setOutput('linked_issue', validIssues.map(n => `#${n}`).join(', '));
+  core.setOutput('issue_title', verifiedIssueDetails.map(iss => `#${iss.number}: ${iss.title}`).join(' | '));
+  core.setOutput('issue_layer', layerList);
   core.setOutput('scope_report', scopeReport);
   core.setOutput('failure_reason', branchNotice);
 };
