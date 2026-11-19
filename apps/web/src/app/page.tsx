@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { SorobanAnchorLogo } from "@/components/Logo";
 import { RateCalculator } from "@/components/RateCalculator";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -330,7 +331,8 @@ export default function HomePage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
           <SorobanAnchorLogo size={42} />
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
             {walletAddress ? (
               <div className="flex items-center gap-2 bg-input border border-border px-4 py-2 rounded-xl text-xs font-mono text-primary">
                 <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
