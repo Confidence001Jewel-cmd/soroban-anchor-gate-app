@@ -44,7 +44,7 @@ module.exports = async ({ github, context, core }) => {
         body: body,
       });
     } catch (e) {
-      console.log(`Failed to create comment: ${e.message}`);
+      console.log(`Notice: Could not post comment to PR #${prNumber}: ${e.message}`);
     }
 
     try {
@@ -73,22 +73,30 @@ module.exports = async ({ github, context, core }) => {
     }
 
     body += `---\n`;
-    body += `> ⛔ **This PR has been automatically closed** to defend the repository against unauthorized or malicious additions.\n`;
+    body += `> ⛔ **This PR has been automatically closed** to defend the repository against unauthorized, out-of-scope, or malicious additions.\n`;
     body += `> If you believe this is an error, please reach out directly to the maintainer @emarkees.\n`;
 
-    await github.rest.issues.createComment({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      issue_number: prNumber,
-      body: body,
-    });
+    try {
+      await github.rest.issues.createComment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: prNumber,
+        body: body,
+      });
+    } catch (commentErr) {
+      console.error(`⚠️ Could not post comment to PR #${prNumber}: ${commentErr.message}`);
+    }
 
-    await github.rest.pulls.update({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      pull_number: prNumber,
-      state: 'closed',
-    });
+    try {
+      await github.rest.pulls.update({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        pull_number: prNumber,
+        state: 'closed',
+      });
+    } catch (closeErr) {
+      console.error(`⚠️ Could not auto-close PR #${prNumber}: ${closeErr.message}`);
+    }
 
     try {
       await github.rest.issues.addLabels({
@@ -97,29 +105,38 @@ module.exports = async ({ github, context, core }) => {
         issue_number: prNumber,
         labels: ['security-rejected'],
       });
-    } catch {}
+    } catch (labelErr) {
+      console.error(`⚠️ Could not add label to PR #${prNumber}: ${labelErr.message}`);
+    }
 
-    core.setFailed(`PR #${prNumber} rejected and auto-closed.`);
+    core.setFailed(`PR #${prNumber} rejected and auto-closed due to security/compliance violations.`);
   } else {
     let body = `## 🛡️ PR Security Gate — PASSED ✅\n\n`;
     body += `**PR:** #${prNumber} by @${prAuthor}\n`;
-    body += `**Linked Issue:** #${linkedIssue} - *${issueTitle}*\n`;
+    body += `**Verified Linked Issue(s):** ${linkedIssue}\n`;
+    if (issueTitle) {
+      body += `**Issue Details:** ${issueTitle}\n`;
+    }
     body += `**Time:** ${timestamp}\n\n`;
     body += `---\n\n`;
     body += `### 🔍 Automated Verification Results:\n`;
-    body += `- ✅ **Approved Issue Assignment:** Verified @${prAuthor} is approved assignee for #${linkedIssue}.\n`;
+    body += `- ✅ **Approved Assignment:** Verified @${prAuthor} is approved assignee for ${linkedIssue}.\n`;
     body += `- ✅ **Scope Check:** ${scopeReport}\n`;
     body += `- ✅ **Malware Scan:** Clean (no reverse shells, miners, keyloggers, exfiltration).\n`;
     body += `- ✅ **Secret Leak Scan:** Clean (no Stellar S-keys or credentials).\n`;
     body += `- ✅ **Integrity:** No unauthorized binary droppers or CI modifications.\n\n`;
     body += `> ⏳ **Ready for maintainer manual review** (@emarkees). Continuous Integration tests can proceed.`;
 
-    await github.rest.issues.createComment({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      issue_number: prNumber,
-      body: body,
-    });
+    try {
+      await github.rest.issues.createComment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: prNumber,
+        body: body,
+      });
+    } catch (commentErr) {
+      console.error(`⚠️ Could not post comment to PR #${prNumber}: ${commentErr.message}`);
+    }
 
     try {
       await github.rest.issues.addLabels({
@@ -128,7 +145,9 @@ module.exports = async ({ github, context, core }) => {
         issue_number: prNumber,
         labels: ['security-passed'],
       });
-    } catch {}
+    } catch (labelErr) {
+      console.error(`⚠️ Could not add label to PR #${prNumber}: ${labelErr.message}`);
+    }
 
     console.log(`✅ PR #${prNumber} passed security gate.`);
   }
