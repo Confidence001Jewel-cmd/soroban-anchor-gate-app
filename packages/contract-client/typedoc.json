@@ -1,0 +1,32 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "Soroban Anchor Gate Contract Client SDK",
+  "entryPoints": ["src/index.ts"],
+  "tsconfig": "./tsconfig.json",
+  "out": "../../docs/sdk-reference",
+  "plugin": [],
+  "readme": "none",
+  "includeVersion": true,
+  "githubPages": false,
+  "cleanOutputDir": true,
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "validation": {
+    "notDocumented": true,
+    "invalidLink": true
+  },
+  "treatWarningsAsErrors": true,
+  "requiredToBeDocumented": [
+    "Enum",
+    "EnumMember",
+    "Variable",
+    "Function",
+    "Class",
+    "Interface",
+    "Property",
+    "Method",
+    "Accessor",
+    "TypeAlias"
+  ]
+}
