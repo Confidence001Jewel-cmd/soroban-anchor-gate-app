@@ -16,4 +16,8 @@ pub enum EscrowError {
     ArithmeticOverflow = 10,
     TokenNotWhitelisted = 11,
     InvalidDisputeSplit = 12,
+    EmptyDisbursement = 13,
+    TooManyDisbursements = 14,
+    InvalidDisbursementAmount = 15,
+    DisbursementMismatch = 16,
 }
