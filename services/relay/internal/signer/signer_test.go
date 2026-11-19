@@ -14,9 +14,9 @@ import (
 
 // mockKMSClient implements KMSClient with an in-memory Ed25519 key for testing.
 type mockKMSClient struct {
-	privKey ed25519.PrivateKey
-	pubKey  ed25519.PublicKey
-	failSign bool
+	privKey    ed25519.PrivateKey
+	pubKey     ed25519.PublicKey
+	failSign   bool
 	failGetPub bool
 }
 
