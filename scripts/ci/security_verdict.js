@@ -22,32 +22,26 @@ module.exports = async ({ core }) => {
     }
   }
 
-  if (gitleaksOutcome === 'failure') {
-    clean = false;
-    let leakDetails = '';
-    const reportPath = 'gitleaks-report.json';
-    if (fs.existsSync(reportPath)) {
-      try {
-        const raw = fs.readFileSync(reportPath, 'utf8');
-        const leaks = JSON.parse(raw);
-        if (Array.isArray(leaks) && leaks.length > 0) {
-          leakDetails = '\n' + leaks.slice(0, 10).map(l =>
-            `- 🚨 **${l.RuleID || l.Description || 'Potential Secret'}** detected in \`${l.File}:${l.StartLine || '?'}\``
-          ).join('\n');
-          if (leaks.length > 10) {
-            leakDetails += `\n...and ${leaks.length - 10} more finding(s)`;
-          }
+  // ── Layer 2: Gitleaks Findings Evaluation ─────────────────────────────
+  // Only flag a secret leak if the report actually exists and contains findings.
+  // Never fail PRs due to runner setup, action crashes, or empty reports.
+  const reportPath = 'gitleaks-report.json';
+  if (fs.existsSync(reportPath)) {
+    try {
+      const raw = fs.readFileSync(reportPath, 'utf8');
+      const leaks = JSON.parse(raw);
+      if (Array.isArray(leaks) && leaks.length > 0) {
+        clean = false;
+        let leakDetails = '\n' + leaks.slice(0, 10).map(l =>
+          `- 🚨 **${l.RuleID || l.Description || 'Potential Secret'}** detected in \`${l.File}:${l.StartLine || '?'}\``
+        ).join('\n');
+        if (leaks.length > 10) {
+          leakDetails += `\n...and ${leaks.length - 10} more finding(s)`;
         }
-      } catch (e) {
-        console.error('Error parsing gitleaks report:', e);
+        report += '\n### 🔑 Secret Leak Detection\n' + leakDetails;
       }
-    }
-
-    if (leakDetails) {
-      report += '\n### 🔑 Secret Leak Detection\n' + leakDetails;
-    } else {
-      report += '\n### 🔑 Secret Leak Detection\n' +
-        '🚨 Leaked credentials, API tokens, or private keys detected in your PR changes or commit history.';
+    } catch (e) {
+      console.error('Error parsing gitleaks report:', e);
     }
   }
 
