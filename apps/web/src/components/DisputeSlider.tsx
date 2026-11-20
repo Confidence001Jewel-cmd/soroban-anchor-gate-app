@@ -44,7 +44,8 @@ export type DisputeAction =
   | { type: "submitRequest" }
   | { type: "submitSuccess"; txHash: string }
   | { type: "submitFailure"; error: string }
-  | { type: "reset" };
+  | { type: "reset" }
+  | { type: "addEvidence"; evidence: DisputeEvidence };
 
 export function computeSplit(payerBps: number): DisputeSplit {
   const p = Math.min(Math.max(payerBps, 0), MAX_BPS);
@@ -120,6 +121,8 @@ export function disputeReducer(state: DisputeState, action: DisputeAction): Disp
       return { ...state, status: "success", txHash: action.txHash, error: null };
     case "submitFailure":
       return { ...state, status: "error", error: action.error, txHash: null };
+    case "addEvidence":
+      return { ...state, evidence: [...state.evidence, action.evidence] };
     case "reset":
       return initialDisputeState();
     default:
