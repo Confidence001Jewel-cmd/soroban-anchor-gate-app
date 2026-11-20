@@ -71,7 +71,8 @@ export function getSystemTheme(
         : null;
 
     if (!matchFn) return "dark";
-    return matchFn("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    const res = matchFn("(prefers-color-scheme: dark)");
+    return res && res.matches ? "dark" : "light";
   } catch {
     return "dark";
   }
@@ -119,15 +120,25 @@ export function applyThemeToElement(
   theme: ResolvedTheme,
   element?: HTMLElement | null
 ): void {
-  if (!element && typeof document !== "undefined") {
-    element = document.documentElement;
-  }
-  if (!element) return;
+  try {
+    if (!element && typeof document !== "undefined") {
+      element = document.documentElement;
+    }
+    if (!element) return;
 
-  element.classList.remove("light", "dark");
-  element.classList.add(theme);
-  element.setAttribute("data-theme", theme);
-  element.style.colorScheme = theme;
+    if (element.classList && typeof element.classList.remove === "function") {
+      element.classList.remove("light", "dark");
+      element.classList.add(theme);
+    }
+    if (typeof element.setAttribute === "function") {
+      element.setAttribute("data-theme", theme);
+    }
+    if (element.style) {
+      element.style.colorScheme = theme;
+    }
+  } catch {
+    // Prevent DOM manipulation failure in non-standard or restricted environments
+  }
 }
 
 /**
@@ -238,27 +249,46 @@ class ThemeStore {
     this.state = { preference: pref, resolved };
     applyThemeToElement(resolved);
 
-    window.addEventListener("storage", (e: StorageEvent) => {
-      if (e.key === THEME_STORAGE_KEY && e.newValue) {
-        if (e.newValue === "light" || e.newValue === "dark" || e.newValue === "system") {
-          const nextPref = e.newValue as ThemePreference;
-          const nextResolved = resolveTheme(nextPref, getSystemTheme());
-          this.state = { preference: nextPref, resolved: nextResolved };
-          applyThemeToElement(nextResolved);
-          this.notify();
-        }
+    if (typeof window.addEventListener === "function") {
+      try {
+        window.addEventListener("storage", (e: StorageEvent) => {
+          if (e.key === THEME_STORAGE_KEY && e.newValue) {
+            if (e.newValue === "light" || e.newValue === "dark" || e.newValue === "system") {
+              const nextPref = e.newValue as ThemePreference;
+              const nextResolved = resolveTheme(nextPref, getSystemTheme());
+              this.state = { preference: nextPref, resolved: nextResolved };
+              applyThemeToElement(nextResolved);
+              this.notify();
+            }
+          }
+        });
+      } catch {
+        // Defensive: handle storage listener attachment errors
       }
-    });
+    }
 
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    mql.addEventListener("change", (e: MediaQueryListEvent) => {
-      if (this.state.preference === "system") {
-        const nextResolved: ResolvedTheme = e.matches ? "dark" : "light";
-        this.state = { ...this.state, resolved: nextResolved };
-        applyThemeToElement(nextResolved);
-        this.notify();
+    if (typeof window.matchMedia === "function") {
+      try {
+        const mql = window.matchMedia("(prefers-color-scheme: dark)");
+        if (mql) {
+          const handleChange = (e: MediaQueryListEvent | MediaQueryList) => {
+            if (this.state.preference === "system") {
+              const nextResolved: ResolvedTheme = e.matches ? "dark" : "light";
+              this.state = { ...this.state, resolved: nextResolved };
+              applyThemeToElement(nextResolved);
+              this.notify();
+            }
+          };
+          if (typeof mql.addEventListener === "function") {
+            mql.addEventListener("change", handleChange);
+          } else if (typeof (mql as unknown as { addListener?: (fn: unknown) => void }).addListener === "function") {
+            (mql as unknown as { addListener: (fn: unknown) => void }).addListener(handleChange);
+          }
+        }
+      } catch {
+        // Defensive: handle matchMedia listener errors
       }
-    });
+    }
   }
 
   public subscribe = (callback: () => void): (() => void) => {
@@ -297,7 +327,11 @@ class ThemeStore {
 
   private notify(): void {
     for (const listener of this.listeners) {
-      listener();
+      try {
+        listener();
+      } catch {
+        // Prevent subscriber error from bubbling
+      }
     }
   }
 }
