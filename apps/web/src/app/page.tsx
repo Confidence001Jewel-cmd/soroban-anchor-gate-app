@@ -26,8 +26,6 @@ import {
   History,
 } from "lucide-react";
 import { SorobanAnchorLogo } from "@/components/Logo";
-import { RateCalculator } from "@/components/RateCalculator";
-import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -87,8 +85,6 @@ export default function HomePage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [profileHashDisplay, setProfileHashDisplay] = useState<string | null>(null);
-  const [isQuoteValid, setIsQuoteValid] = useState(false);
-  const [quoteBlockReason, setQuoteBlockReason] = useState<string | null>(null);
 
   useEffect(() => {
     async function checkWallet() {
@@ -242,14 +238,6 @@ export default function HomePage() {
       return;
     }
 
-    if (!isQuoteValid) {
-      setTxState("failed");
-      setStatusMessage(
-        `Cannot confirm deposit: ${quoteBlockReason || "Exchange rate quote is expired or invalid. Please refresh rate."}`
-      );
-      return;
-    }
-
     try {
       const validated = validateEscrowForm({
         payer: walletAddress,
@@ -323,6 +311,7 @@ export default function HomePage() {
 
   const parsedAmount = parseFloat(amount) || 0;
   const protocolFeeEst = (parsedAmount * 0.02).toFixed(2);
+  const anchorPayoutEst = (parsedAmount - parseFloat(protocolFeeEst)).toFixed(2);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col justify-between">
@@ -331,8 +320,7 @@ export default function HomePage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
           <SorobanAnchorLogo size={42} />
 
-          <div className="flex items-center gap-3">
-            <ThemeToggle />
+          <div className="flex items-center gap-4">
             {walletAddress ? (
               <div className="flex items-center gap-2 bg-input border border-border px-4 py-2 rounded-xl text-xs font-mono text-primary">
                 <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
@@ -579,85 +567,64 @@ export default function HomePage() {
                     </div>
                   )}
 
-                  <RateCalculator
-                    sellAmount={amount}
-                    sellAsset={
-                      tokenPreset === "xlm"
-                        ? "Native SAC (XLM)"
-                        : tokenPreset === "usdc"
-                        ? "USDC SAC"
-                        : tokenAddress
-                    }
-                    walletAddress={walletAddress}
-                    onValidityChange={(valid, reason) => {
-                      setIsQuoteValid(valid);
-                      setQuoteBlockReason(reason);
-                    }}
-                  />
-
-                  <div className="space-y-2">
-                    <Button
-                      type="submit"
-                      className="w-full h-12 text-base"
-                      disabled={
-                        txState === "preparing" ||
-                        txState === "simulating" ||
-                        txState === "awaiting-signature" ||
-                        txState === "submitting" ||
-                        txState === "pending" ||
-                        !isQuoteValid
-                      }
-                    >
-                      {txState === "preparing" && (
-                        <>
-                          <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                          <span>Preparing Profile Hash...</span>
-                        </>
-                      )}
-                      {txState === "simulating" && (
-                        <>
-                          <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                          <span>Simulating Soroban Transaction...</span>
-                        </>
-                      )}
-                      {txState === "awaiting-signature" && (
-                        <>
-                          <FileCheck className="w-4 h-4 mr-2 animate-bounce" />
-                          <span>Awaiting Freighter Signature...</span>
-                        </>
-                      )}
-                      {txState === "submitting" && (
-                        <>
-                          <Send className="w-4 h-4 mr-2 animate-pulse" />
-                          <span>Submitting to Testnet RPC...</span>
-                        </>
-                      )}
-                      {txState === "pending" && (
-                        <>
-                          <Clock className="w-4 h-4 mr-2 animate-spin" />
-                          <span>Authoritatively Polling Confirmation...</span>
-                        </>
-                      )}
-                      {(txState === "idle" ||
-                        txState === "confirmed" ||
-                        txState === "failed" ||
-                        txState === "wallet-required") && (
-                        <>
-                          <span>Initialize Escrow on Testnet</span>
-                          <ArrowRight className="w-4 h-4 ml-2" />
-                        </>
-                      )}
-                    </Button>
-                    {!isQuoteValid && quoteBlockReason && (
-                      <p
-                        className="text-xs text-amber-500 font-medium flex items-center justify-center gap-1.5 pt-1 text-center"
-                        role="alert"
-                      >
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Deposit disabled: {quoteBlockReason}</span>
-                      </p>
-                    )}
+                  <div className="p-4 rounded-xl border border-border bg-input/40 flex items-center justify-between text-xs font-mono">
+                    <span className="text-muted-foreground">Est. Net Anchor Disbursement:</span>
+                    <span className="text-primary font-bold">
+                      {parsedAmount > 0 ? `${anchorPayoutEst} tokens` : "—"}
+                    </span>
                   </div>
+
+                  <Button
+                    type="submit"
+                    className="w-full h-12 text-base"
+                    disabled={
+                      txState === "preparing" ||
+                      txState === "simulating" ||
+                      txState === "awaiting-signature" ||
+                      txState === "submitting" ||
+                      txState === "pending"
+                    }
+                  >
+                    {txState === "preparing" && (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                        <span>Preparing Profile Hash...</span>
+                      </>
+                    )}
+                    {txState === "simulating" && (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                        <span>Simulating Soroban Transaction...</span>
+                      </>
+                    )}
+                    {txState === "awaiting-signature" && (
+                      <>
+                        <FileCheck className="w-4 h-4 mr-2 animate-bounce" />
+                        <span>Awaiting Freighter Signature...</span>
+                      </>
+                    )}
+                    {txState === "submitting" && (
+                      <>
+                        <Send className="w-4 h-4 mr-2 animate-pulse" />
+                        <span>Submitting to Testnet RPC...</span>
+                      </>
+                    )}
+                    {txState === "pending" && (
+                      <>
+                        <Clock className="w-4 h-4 mr-2 animate-spin" />
+                        <span>Authoritatively Polling Confirmation...</span>
+                      </>
+                    )}
+                    {(txState === "idle" ||
+                      txState === "confirmed" ||
+                      txState === "failed" ||
+                      txState === "wallet-required") && (
+                      <>
+                        <span>Initialize Escrow on Testnet</span>
+                        <ArrowRight className="w-4 h-4 ml-2" />
+                      </>
+                    )}
+                  </Button>
                 </form>
 
                 {/* Status Semantics Banner */}
