@@ -18,6 +18,9 @@ import (
 	"github.com/soroban-anchor-gate/relay/internal/listener"
 	"github.com/soroban-anchor-gate/relay/internal/store"
 	"github.com/soroban-anchor-gate/relay/internal/store/migrations"
+	"github.com/soroban-anchor-gate/relay/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
@@ -81,11 +84,31 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Production observability: Prometheus metrics and OTel trace propagation.
+	metrics := telemetry.NewMetrics()
+	otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	shutdownTracer, err := telemetry.InitTracer(ctx, telemetry.TracingConfig{
+		ServiceName:    "soroban-anchor-relay",
+		ServiceVersion: os.Getenv("RELAY_VERSION"),
+		Environment:    os.Getenv("RELAY_ENVIRONMENT"),
+		OTLPEndpoint:   otlpEndpoint,
+	})
+	if err != nil {
+		logger.Error("Failed to initialize OpenTelemetry tracer; continuing without trace export", "error", err)
+		shutdownTracer = func(context.Context) error { return nil }
+	}
+	if otlpEndpoint != "" {
+		logger.Info("OpenTelemetry OTLP trace export enabled", "endpoint", otlpEndpoint)
+	}
+
 	// Start HTTP API monitoring server
 	apiServer := api.NewServer(contractID, rpcURL, relayStore)
+	handler := http.NewServeMux()
+	handler.Handle("/metrics", metrics.Handler())
+	handler.Handle("/", apiServer.Handler())
 	httpServer := &http.Server{
 		Addr:         ":" + apiPort,
-		Handler:      apiServer.Handler(),
+		Handler:      telemetry.Middleware(handler),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -121,9 +144,11 @@ func main() {
 
 	eventChan := make(chan listener.EventPayload, 100)
 	sub := listener.NewEventSubscriber(rpcURL, contractID, relayStore, logger)
+	sub.SetMetrics(metrics)
 
 	go func() {
 		if err := sub.PollEvents(ctx, eventChan); err != nil && !errors.Is(err, context.Canceled) {
+			metrics.RecordRPCError("getEvents")
 			logger.Error("Event poller failure", "error", err)
 		}
 	}()
@@ -135,17 +160,31 @@ func main() {
 				if !ok {
 					return
 				}
+				metrics.RecordEscrowEvent("received")
+				processingStarted := time.Now()
+				processCtx, span := telemetry.Tracer().Start(ctx, "relay.process_escrow_event",
+					trace.WithAttributes(
+						attribute.String("escrow.event_id", payload.EventID),
+						attribute.Int64("escrow.id", int64(payload.EscrowID)),
+					),
+				)
 				logger.Info("Relay received contract event",
 					"event_id", payload.EventID,
 					"escrow_id", payload.EscrowID,
 					"amount", payload.PayoutAmount.String(),
 					"profile_hash", payload.ProfileHashHex,
+					"trace_id", telemetry.TraceID(processCtx),
 				)
 
 				// Complete processing after downstream handling
 				if err := relayStore.MarkCompleted(payload.EventID); err != nil {
+					metrics.RecordEscrowEvent("failed")
 					logger.Error("Failed to mark event completed", "event_id", payload.EventID, "error", err)
+				} else {
+					metrics.RecordEscrowEvent("completed")
 				}
+				metrics.ObserveLedgerProcessing(time.Since(processingStarted))
+				span.End()
 			case <-ctx.Done():
 				return
 			}
@@ -158,6 +197,9 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+	if err := shutdownTracer(shutdownCtx); err != nil {
+		logger.Error("Failed to flush OpenTelemetry tracer on shutdown", "error", err)
+	}
 }
 
 func handleMigrateCommand(logger *slog.Logger, args []string) {
