@@ -16,6 +16,7 @@ import {
   initialDisputeState,
   type DisputeState,
 } from "@/components/DisputeSlider";
+import { EvidenceUpload, toDisputeEvidence } from "@/components/EvidenceUpload";
 import { Scale, CheckCircle2, AlertTriangle, RefreshCw, FileText, Link } from "lucide-react";
 
 export default function DisputesPage() {
@@ -161,6 +162,16 @@ export default function DisputesPage() {
                   <Link className="w-3 h-3 ml-1 shrink-0 opacity-50" />
                 </a>
               ))}
+            </div>
+            <div className="pt-2">
+              <EvidenceUpload
+                onUploadSuccess={(metadata) => {
+                  dispatch({
+                    type: "addEvidence",
+                    evidence: toDisputeEvidence(metadata),
+                  });
+                }}
+              />
             </div>
           </div>
 
