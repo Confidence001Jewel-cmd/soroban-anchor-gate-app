@@ -235,3 +235,4 @@ describe("EscrowGateClient & SDK Helpers", () => {
 import "./ttl.test";
 import "./units.test";
 import "./sep38.test";
+import "./tokens.test";
