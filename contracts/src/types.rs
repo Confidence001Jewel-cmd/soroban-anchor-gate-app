@@ -21,6 +21,30 @@ pub struct EscrowRecord {
     pub unlock_timestamp: u64,
 }
 
+/// A single leg of a split payout: one off-chain bank-account commitment that
+/// receives a fixed share of an escrow's distributable balance.
+///
+/// `commitment_hash` is an opaque 32-byte digest that binds the on-chain leg to
+/// the anchor's off-chain disbursement instruction (e.g. a hash of the
+/// beneficiary bank account + reference), so auditors can reconcile each
+/// tracking event against the anchor's ledger without exposing PII on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisbursementCommitment {
+    pub recipient: Address,
+    pub amount: i128,
+    pub commitment_hash: BytesN<32>,
+}
+
+/// One row of a paginated audit export: the escrow identifier paired with
+/// its current on-chain record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowEntry {
+    pub escrow_id: u64,
+    pub record: EscrowRecord,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {

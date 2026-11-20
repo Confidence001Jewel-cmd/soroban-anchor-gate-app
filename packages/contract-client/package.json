@@ -9,14 +9,21 @@
   "scripts": {
     "build": "node node_modules/typescript/lib/tsc.js",
     "typecheck": "node node_modules/typescript/lib/tsc.js --noEmit",
+    "lint": "npm run typecheck",
     "test": "node node_modules/typescript/lib/tsc.js && node --test dist/index.test.js",
-    "test:integration": "node node_modules/typescript/lib/tsc.js && node --test dist/integration.test.js"
+    "test:integration": "node node_modules/typescript/lib/tsc.js && node --test dist/integration.test.js",
+    "docs": "npm run docs:html && npm run docs:markdown",
+    "docs:html": "node node_modules/typedoc/bin/typedoc --options typedoc.json",
+    "docs:markdown": "node node_modules/typedoc/bin/typedoc --options typedoc.markdown.json",
+    "docs:check": "node node_modules/typedoc/bin/typedoc --options typedoc.json --emit none"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^17.2.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.14.1",
     "typescript": "^5.4.0"
   },
   "sideEffects": false

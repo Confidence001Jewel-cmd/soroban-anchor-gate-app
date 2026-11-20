@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,13 +13,24 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/lib/pq"
 	"github.com/soroban-anchor-gate/relay/internal/api"
 	"github.com/soroban-anchor-gate/relay/internal/listener"
 	"github.com/soroban-anchor-gate/relay/internal/store"
+	"github.com/soroban-anchor-gate/relay/internal/store/migrations"
+	"github.com/soroban-anchor-gate/relay/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	// Support CLI database migration subcommands: `relay migrate down`, `relay migrate up`, `relay migrate version`
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		handleMigrateCommand(logger, os.Args[2:])
+		return
+	}
 
 	contractID := os.Getenv("SOROBAN_CONTRACT_ID")
 	if contractID == "" {
@@ -71,11 +84,31 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Production observability: Prometheus metrics and OTel trace propagation.
+	metrics := telemetry.NewMetrics()
+	otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	shutdownTracer, err := telemetry.InitTracer(ctx, telemetry.TracingConfig{
+		ServiceName:    "soroban-anchor-relay",
+		ServiceVersion: os.Getenv("RELAY_VERSION"),
+		Environment:    os.Getenv("RELAY_ENVIRONMENT"),
+		OTLPEndpoint:   otlpEndpoint,
+	})
+	if err != nil {
+		logger.Error("Failed to initialize OpenTelemetry tracer; continuing without trace export", "error", err)
+		shutdownTracer = func(context.Context) error { return nil }
+	}
+	if otlpEndpoint != "" {
+		logger.Info("OpenTelemetry OTLP trace export enabled", "endpoint", otlpEndpoint)
+	}
+
 	// Start HTTP API monitoring server
 	apiServer := api.NewServer(contractID, rpcURL, relayStore)
+	handler := http.NewServeMux()
+	handler.Handle("/metrics", metrics.Handler())
+	handler.Handle("/", apiServer.Handler())
 	httpServer := &http.Server{
 		Addr:         ":" + apiPort,
-		Handler:      apiServer.Handler(),
+		Handler:      telemetry.Middleware(handler),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -87,11 +120,35 @@ func main() {
 		}
 	}()
 
+	// Run pending database migrations atomically before listener initialization if DATABASE_URL is configured
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		logger.Info("DATABASE_URL configured; running pending database migrations")
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			logger.Error("Failed to open database for migrations", "error", err)
+			os.Exit(1)
+		}
+		defer db.Close()
+
+		migCtx, migCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		migrator := migrations.NewMigrator(db, logger)
+		if err := migrator.RunPending(migCtx); err != nil {
+			migCancel()
+			logger.Error("Automated database migration failed on boot", "error", err)
+			os.Exit(1)
+		}
+		migCancel()
+		logger.Info("Automated database migrations completed successfully")
+	}
+
 	eventChan := make(chan listener.EventPayload, 100)
 	sub := listener.NewEventSubscriber(rpcURL, contractID, relayStore, logger)
+	sub.SetMetrics(metrics)
 
 	go func() {
 		if err := sub.PollEvents(ctx, eventChan); err != nil && !errors.Is(err, context.Canceled) {
+			metrics.RecordRPCError("getEvents")
 			logger.Error("Event poller failure", "error", err)
 		}
 	}()
@@ -103,17 +160,31 @@ func main() {
 				if !ok {
 					return
 				}
+				metrics.RecordEscrowEvent("received")
+				processingStarted := time.Now()
+				processCtx, span := telemetry.Tracer().Start(ctx, "relay.process_escrow_event",
+					trace.WithAttributes(
+						attribute.String("escrow.event_id", payload.EventID),
+						attribute.Int64("escrow.id", int64(payload.EscrowID)),
+					),
+				)
 				logger.Info("Relay received contract event",
 					"event_id", payload.EventID,
 					"escrow_id", payload.EscrowID,
 					"amount", payload.PayoutAmount.String(),
 					"profile_hash", payload.ProfileHashHex,
+					"trace_id", telemetry.TraceID(processCtx),
 				)
 
 				// Complete processing after downstream handling
 				if err := relayStore.MarkCompleted(payload.EventID); err != nil {
+					metrics.RecordEscrowEvent("failed")
 					logger.Error("Failed to mark event completed", "event_id", payload.EventID, "error", err)
+				} else {
+					metrics.RecordEscrowEvent("completed")
 				}
+				metrics.ObserveLedgerProcessing(time.Since(processingStarted))
+				span.End()
 			case <-ctx.Done():
 				return
 			}
@@ -126,4 +197,56 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+	if err := shutdownTracer(shutdownCtx); err != nil {
+		logger.Error("Failed to flush OpenTelemetry tracer on shutdown", "error", err)
+	}
+}
+
+func handleMigrateCommand(logger *slog.Logger, args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: relay migrate [up|down|version]")
+		os.Exit(1)
+	}
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		logger.Error("DATABASE_URL environment variable is required for migrations")
+		os.Exit(1)
+	}
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		logger.Error("Failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	migrator := migrations.NewMigrator(db, logger)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	switch args[0] {
+	case "up":
+		if err := migrator.RunPending(ctx); err != nil {
+			logger.Error("Failed to run pending migrations", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("Migrations applied successfully")
+	case "down":
+		if err := migrator.RollbackLatest(ctx); err != nil {
+			logger.Error("Failed to rollback migration", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("Migration rollback completed successfully")
+	case "version":
+		ver, dirty, err := migrator.GetVersion(ctx)
+		if err != nil {
+			logger.Error("Failed to get migration version", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("Current migration version", "version", ver, "dirty", dirty)
+	default:
+		logger.Error("Unknown migration command", "command", args[0])
+		os.Exit(1)
+	}
 }
