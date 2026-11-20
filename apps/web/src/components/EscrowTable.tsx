@@ -5,13 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
-  RefreshCw,
   Filter,
   SortAsc,
   SortDesc,
   Download,
   Calendar,
-  Search,
   X,
 } from "lucide-react";
 
@@ -94,11 +92,7 @@ export function sortEscrows(rows: EscrowRow[], sort: EscrowSort): EscrowRow[] {
   });
 }
 
-export function paginateEscrows(
-  rows: EscrowRow[],
-  page: number,
-  pageSize: PageSize
-): EscrowRow[] {
+export function paginateEscrows(rows: EscrowRow[], page: number, pageSize: number): EscrowRow[] {
   const start = Math.max(0, page - 1) * pageSize;
   return rows.slice(start, start + pageSize);
 }
@@ -160,7 +154,6 @@ export function EscrowTable({ data = [], pageSize: initialPageSize = 10 }: Escro
   const [pageSize, setPageSize] = React.useState<PageSize>(
     PAGE_SIZE_OPTIONS.includes(initialPageSize) ? initialPageSize : 10
   );
-  const [csvFileName, setCsvFileName] = React.useState("escrows.csv");
 
   const filtered = filterEscrows(data, filters);
   const sorted = sortEscrows(filtered, sort);
@@ -168,41 +161,31 @@ export function EscrowTable({ data = [], pageSize: initialPageSize = 10 }: Escro
   const currentPage = Math.min(Math.max(1, page), totalPages);
   const currentRows = paginateEscrows(sorted, currentPage, pageSize);
 
-  const setSearch = React.useCallback(
-    (value: string) => setFilters((prev) => ({ ...prev, search: value })),
-    []
-  );
-  const setStatus = React.useCallback(
-    (value: EscrowStatus | "All") => setFilters((prev) => ({ ...prev, status: value })),
-    []
-  );
-  const setDateFrom = React.useCallback(
-    (value: string) => setFilters((prev) => ({ ...prev, dateFrom: value })),
-    []
-  );
-  const setDateTo = React.useCallback(
-    (value: string) => setFilters((prev) => ({ ...prev, dateTo: value })),
-    []
-  );
+  const setSearch = (value: string) => setFilters((prev) => ({ ...prev, search: value }));
+  const setStatus = (value: EscrowStatus | "All") =>
+    setFilters((prev) => ({ ...prev, status: value }));
+  const setDateFrom = (value: string) =>
+    setFilters((prev) => ({ ...prev, dateFrom: value }));
+  const setDateTo = (value: string) =>
+    setFilters((prev) => ({ ...prev, dateTo: value }));
 
-  const clearFilters = React.useCallback(() => {
+  const clearFilters = () => {
     setFilters({ ...DEFAULT_FILTERS });
     setPage(1);
-  }, []);
+  };
 
-  const handleSort = React.useCallback((field: "amount" | "date") => {
+  const handleSort = (field: "amount" | "date") => {
     setSort((prev) =>
       prev.field === field && prev.dir === "asc"
         ? { field, dir: "desc" }
         : { field, dir: "asc" }
     );
-  }, []);
+  };
 
-  const handleExport = React.useCallback(() => {
+  const handleExport = () => {
     const csv = escrowRowsToCsv(sorted);
-    const name = csvFileName.trim() || "escrows.csv";
-    downloadCsv(csv, name);
-  }, [sorted, csvFileName]);
+    downloadCsv(csv, "escrows.csv");
+  };
 
   const activeFilterCount =
     (filters.search.trim().length > 0 ? 1 : 0) +
@@ -372,8 +355,11 @@ export function EscrowTable({ data = [], pageSize: initialPageSize = 10 }: Escro
             <select
               value={pageSize}
               onChange={(e) => {
-                setPageSize(e.target.value as PageSize);
-                setPage(1);
+                const selected = PAGE_SIZE_OPTIONS.find((s) => String(s) === e.target.value);
+                if (selected) {
+                  setPageSize(selected);
+                  setPage(1);
+                }
               }}
               className="w-20 h-8 rounded border border-border bg-input px-2 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-primary"
             >
@@ -407,12 +393,7 @@ export function EscrowTable({ data = [], pageSize: initialPageSize = 10 }: Escro
             </button>
           </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            className="text-xs"
-          >
+          <Button variant="outline" size="sm" onClick={handleExport} className="text-xs">
             <Download className="w-3 h-3 mr-1" /> Export CSV
           </Button>
         </div>
