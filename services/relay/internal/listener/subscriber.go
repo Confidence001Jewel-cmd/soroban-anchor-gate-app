@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/soroban-anchor-gate/relay/internal/store"
+	"github.com/soroban-anchor-gate/relay/internal/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type EventPayload struct {
@@ -36,6 +38,7 @@ type EventSubscriber struct {
 	httpClient *http.Client
 	store      store.IdempotencyStore
 	logger     *slog.Logger
+	metrics    *telemetry.Metrics
 }
 
 type RPCRequest struct {
@@ -133,6 +136,11 @@ func NewEventSubscriber(rpcURL, contractID string, st store.IdempotencyStore, lo
 	}
 }
 
+// SetMetrics attaches Prometheus instrumentation to RPC calls.
+func (s *EventSubscriber) SetMetrics(metrics *telemetry.Metrics) {
+	s.metrics = metrics
+}
+
 func (s *EventSubscriber) PollEvents(ctx context.Context, eventChan chan<- EventPayload) error {
 	currentLedger := s.store.GetCursor()
 
@@ -222,6 +230,9 @@ func (s *EventSubscriber) PollEvents(ctx context.Context, eventChan chan<- Event
 }
 
 func (s *EventSubscriber) GetLatestLedger(ctx context.Context) (uint32, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "rpc.getLatestLedger", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
 	reqBody := RPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -241,6 +252,7 @@ func (s *EventSubscriber) GetLatestLedger(ctx context.Context) (uint32, error) {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		s.metrics.RecordRPCError("getLatestLedger")
 		return 0, fmt.Errorf("getLatestLedger HTTP call error: %w", err)
 	}
 	defer resp.Body.Close()
@@ -256,6 +268,7 @@ func (s *EventSubscriber) GetLatestLedger(ctx context.Context) (uint32, error) {
 	}
 
 	if rpcResp.Error != nil {
+		s.metrics.RecordRPCError("getLatestLedger")
 		return 0, fmt.Errorf("RPC error code %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 	}
 
@@ -267,6 +280,9 @@ func (s *EventSubscriber) GetLatestLedger(ctx context.Context) (uint32, error) {
 }
 
 func (s *EventSubscriber) fetchEventsFromRPC(ctx context.Context, startLedger uint32) ([]EventItem, uint32, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "rpc.getEvents", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
 	reqBody := RPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -298,6 +314,7 @@ func (s *EventSubscriber) fetchEventsFromRPC(ctx context.Context, startLedger ui
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		s.metrics.RecordRPCError("getEvents")
 		return nil, 0, fmt.Errorf("RPC HTTP call error: %w", err)
 	}
 	defer resp.Body.Close()
@@ -313,6 +330,7 @@ func (s *EventSubscriber) fetchEventsFromRPC(ctx context.Context, startLedger ui
 	}
 
 	if rpcResp.Error != nil {
+		s.metrics.RecordRPCError("getEvents")
 		return nil, 0, fmt.Errorf("RPC error code %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 	}
 
